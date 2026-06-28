@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AnomalyReport,
@@ -76,6 +76,23 @@ function App() {
   const [activeSession, setActiveSession] = useState<string | null>(null);
   const [hindsightEnabled, setHindsightEnabled] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [sessions, setSessions] = useState<AnomalyReport[]>([]);
+
+  // ── Load sessions from backend ──────────────────────────────
+  useEffect(() => {
+    const loadSessions = async () => {
+      try {
+        const res = await fetch(`${BACKEND_URL}/api/sessions`);
+        if (res.ok) {
+          const data = await res.json();
+          setSessions(data);
+        }
+      } catch (err) {
+        console.error("[HIRA] Failed to load sessions from backend:", err);
+      }
+    };
+    loadSessions();
+  }, []);
 
   // ── Fire a session through the selected pipeline ──────────
   const fireSession = useCallback(
@@ -213,8 +230,15 @@ function App() {
             </div>
           </div>
           <div className="session-group">
-            {MOCK_SESSIONS.map((session) => {
-              const meta = sessionMeta[session.session_id];
+            {(sessions.length > 0 ? sessions : MOCK_SESSIONS).map((session) => {
+              const meta = sessionMeta[session.session_id] || {
+                indicator: session.session_id.includes("3") || session.session_id.includes("2")
+                  ? "session-btn__indicator--s3"
+                  : session.session_id.includes("5") || session.session_id.includes("6") || session.session_id.includes("Edge")
+                  ? "session-btn__indicator--s5"
+                  : "session-btn__indicator--s1",
+                tag: session.trigger_type,
+              };
               return (
                 <button
                   key={session.session_id}
