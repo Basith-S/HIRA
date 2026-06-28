@@ -7,6 +7,7 @@
 // calls can replace the mock blocks without touching call-sites.
 // ─────────────────────────────────────────────────────────────
 
+import axios from "axios";
 import type { ComplexityScore } from "./complexityScorer";
 
 export type ModelPath =
@@ -46,6 +47,32 @@ const FULL_MODEL_AVG_MS = 1150;
 /** Pre-computed saving % for fast-path routing vs always-full-model. */
 const FAST_PATH_SAVING_PCT = Math.round((1 - FAST_MODEL_AVG_MS / FULL_MODEL_AVG_MS) * 100);
 
+async function callGemini(prompt: string, model: string = "gemini-1.5-flash"): Promise<{ text: string; tokens: number }> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY not configured in environment");
+  }
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  const response = await axios.post(
+    url,
+    {
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.25,
+        maxOutputTokens: 600,
+      },
+    },
+    { timeout: 15000 }
+  );
+
+  const text = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) {
+    throw new Error("Empty candidate list returned from Gemini API");
+  }
+  const tokens = response.data?.usageMetadata?.totalTokens ?? Math.round(prompt.length / 4 + text.length / 4);
+  return { text: text.trim(), tokens };
+}
+
 /**
  * Route the request to the appropriate (simulated) model and return a
  * recommendation with token usage and routing metadata.
@@ -84,6 +111,8 @@ export async function routeToModel(
     };
   }
 
+  const useGemini = Boolean(process.env.GEMINI_API_KEY);
+
   // ── 2. Escalation path — high complexity or composite attack ─
   if (complexity.complexityLevel === "high" || complexity.compositeAttack) {
     console.log(
@@ -91,7 +120,7 @@ export async function routeToModel(
     );
     const routingDecision: RoutingDecision = {
       path: "escalation_path",
-      modelUsed: "gpt-4o (simulated)",
+      modelUsed: useGemini ? "gemini-1.5-flash (escalated)" : "gpt-4o (simulated)",
       reason:
         complexity.compositeAttack
           ? `Composite attack pattern detected (pattern confidence ≥ 0.7). Full model required for multi-step forensic planning.`
@@ -99,16 +128,56 @@ export async function routeToModel(
       latencySavingPct: 0,
     };
 
-    const escalatedRecommendation = buildEscalatedRecommendation(
-      triggerType,
-      sessionId,
-      complexity,
-      hindsightRecommendation
-    );
+    let escalatedRecommendation = "";
+    let tokensUsed = complexity.tokenEstimate + 420;
+
+    if (useGemini) {
+      try {
+        const prompt = `
+You are HIRA, an escalated senior security analyst AI agent.
+Analyze this high-severity or composite incident and construct a detailed response plan.
+
+Incident Details:
+Session ID: ${sessionId}
+Trigger Type: ${triggerType}
+Severity Score: ${complexity.severity}
+High-Risk Keywords Detected: ${complexity.keywordsMatched.length > 0 ? complexity.keywordsMatched.join(", ") : "none"}
+
+Historical context (Hindsight matches):
+${hindsightRecommendation ? `Prior correlation confirms composite pattern: "${hindsightRecommendation}"` : "No historical patterns match this incident."}
+
+Provide a detailed forensic response plan including:
+1. Threat confirmation status.
+2. Immediate isolation/containment steps (WAF, account locks, network segment).
+3. Long-term remediation and stakeholder/IR notification steps.
+
+Be professional, concise, and direct in your layout. Keep the output under 3-4 bullet points.
+`;
+        console.log(`[Gemini] Calling Gemini API for escalated analysis on ${sessionId}...`);
+        const result = await callGemini(prompt);
+        escalatedRecommendation = `[REAL-TIME-GEMINI] ${result.text}`;
+        tokensUsed = result.tokens;
+      } catch (err: any) {
+        console.warn(`[Gemini] Call failed, falling back to simulated output:`, err.message);
+        escalatedRecommendation = buildEscalatedRecommendation(
+          triggerType,
+          sessionId,
+          complexity,
+          hindsightRecommendation
+        );
+      }
+    } else {
+      escalatedRecommendation = buildEscalatedRecommendation(
+        triggerType,
+        sessionId,
+        complexity,
+        hindsightRecommendation
+      );
+    }
 
     return {
       recommendation: escalatedRecommendation,
-      tokensUsed: complexity.tokenEstimate + 420, // simulated output tokens
+      tokensUsed,
       routingDecision,
     };
   }
@@ -119,20 +188,50 @@ export async function routeToModel(
   );
   const routingDecision: RoutingDecision = {
     path: "fast_path",
-    modelUsed: "llama-3-8b (simulated)",
+    modelUsed: useGemini ? "gemini-1.5-flash (fast-path)" : "llama-3-8b (simulated)",
     reason: `Low complexity (tokenEstimate=${complexity.tokenEstimate}, severity=${complexity.severity.toFixed(2)}). Fast path sufficient — no high-severity keywords, no composite pattern.`,
     latencySavingPct: FAST_PATH_SAVING_PCT,
   };
 
-  const fastRecommendation = buildFastPathRecommendation(
-    triggerType,
-    sessionId,
-    hindsightRecommendation
-  );
+  let fastRecommendation = "";
+  let tokensUsed = complexity.tokenEstimate + 120;
+
+  if (useGemini) {
+    try {
+      const prompt = `
+You are HIRA, a fast-path security analyst AI agent.
+Analyze this incident and provide a single-sentence recommended mitigation.
+
+Incident Details:
+Session: ${sessionId}
+Type: ${triggerType}
+Severity: ${complexity.severity}
+
+Provide a short, direct recommended mitigation action plan. Keep it strictly to one or two sentences.
+`;
+      console.log(`[Gemini] Calling Gemini API for fast-path analysis on ${sessionId}...`);
+      const result = await callGemini(prompt);
+      fastRecommendation = `[REAL-TIME-GEMINI] ${result.text}`;
+      tokensUsed = result.tokens;
+    } catch (err: any) {
+      console.warn(`[Gemini] Call failed, falling back to simulated output:`, err.message);
+      fastRecommendation = buildFastPathRecommendation(
+        triggerType,
+        sessionId,
+        hindsightRecommendation
+      );
+    }
+  } else {
+    fastRecommendation = buildFastPathRecommendation(
+      triggerType,
+      sessionId,
+      hindsightRecommendation
+    );
+  }
 
   return {
     recommendation: fastRecommendation,
-    tokensUsed: complexity.tokenEstimate + 120, // simulated output tokens
+    tokensUsed,
     routingDecision,
   };
 }
