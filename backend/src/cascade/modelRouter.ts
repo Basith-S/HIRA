@@ -37,6 +37,15 @@ export interface ModelResponse {
 /** Hard cap on context tokens — triggers degraded fallback when exceeded. */
 export const TOKEN_BUDGET = 8000;
 
+// ── Latency model constants ────────────────────────────────────
+// Used to compute realistic latency-saving estimates for the audit trail.
+/** Average fast-model latency (ms) — llama-3-8b tier. */
+const FAST_MODEL_AVG_MS = 420;
+/** Average full-model latency (ms) — gpt-4o tier. */
+const FULL_MODEL_AVG_MS = 1150;
+/** Pre-computed saving % for fast-path routing vs always-full-model. */
+const FAST_PATH_SAVING_PCT = Math.round((1 - FAST_MODEL_AVG_MS / FULL_MODEL_AVG_MS) * 100);
+
 /**
  * Route the request to the appropriate (simulated) model and return a
  * recommendation with token usage and routing metadata.
@@ -111,8 +120,8 @@ export async function routeToModel(
   const routingDecision: RoutingDecision = {
     path: "fast_path",
     modelUsed: "llama-3-8b (simulated)",
-    reason: `Low-to-medium complexity (tokenEstimate=${complexity.tokenEstimate}, severity=${complexity.severity.toFixed(2)}). Fast path sufficient — no high-severity keywords, no composite pattern.`,
-    latencySavingPct: 42,
+    reason: `Low complexity (tokenEstimate=${complexity.tokenEstimate}, severity=${complexity.severity.toFixed(2)}). Fast path sufficient — no high-severity keywords, no composite pattern.`,
+    latencySavingPct: FAST_PATH_SAVING_PCT,
   };
 
   const fastRecommendation = buildFastPathRecommendation(

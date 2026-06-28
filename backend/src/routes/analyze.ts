@@ -16,7 +16,6 @@ import { Router, Request, Response } from "express";
 import { v4 as uuidv4 } from "uuid";
 import { recallSimilar, storeIncident } from "../memory/memoryService";
 import { matchPatterns } from "../memory/patternMatcher";
-import { buildSummaryText } from "../memory/embedder";
 import { scoreComplexity } from "../cascade/complexityScorer";
 import { routeToModel, TOKEN_BUDGET } from "../cascade/modelRouter";
 import { buildAuditTrail } from "../cascade/auditTrail";
@@ -101,16 +100,24 @@ router.post("/", async (req: Request, res: Response) => {
     );
   }
 
-  // ── CASCADE: Build trigger text for scoring ────────────────
-  // Build the summary text the same way the embedder does,
-  // including source and trigger context in the summary string.
-  const triggerSummary = `source:${source} trigger:${trigger_type} severity:${severity.toFixed(2)}` +
-    (hindsightRecommendation ? ` hindsight:${hindsightRecommendation.substring(0, 120)}` : "");
-  const triggerText = buildSummaryText(trigger_type, severity, triggerSummary);
+  // ── CASCADE: Build full trigger object for complexity scoring ───
+  // Include every field from payload so the scorer sees indicator-rich
+  // context (e.g. known_breach_list_match, concurrent_failed_logins) and
+  // the keyword scanner can hit values inside nested structures.
+  const triggerForScoring: Record<string, unknown> = {
+    session_id,
+    trigger_type,
+    source,
+    severity,
+    ...payload, // spreads all indicator fields
+    ...(hindsightRecommendation
+      ? { hindsight_note: hindsightRecommendation.substring(0, 200) }
+      : {}),
+  };
 
   // ── CASCADE: Score complexity ──────────────────────────────
   const complexity = scoreComplexity(
-    triggerText,
+    triggerForScoring,
     matchConfidence,
     severity,
     pastIncidents.length
