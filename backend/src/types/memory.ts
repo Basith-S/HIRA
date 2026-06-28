@@ -1,13 +1,12 @@
 // ─────────────────────────────────────────────────────────────
 // Shared Memory Types — Node/Express backend
 //
-// These mirror the Phase 1 schemas exactly.  The only additions
-// are the backend-internal types: InputTrigger and SimilarIncident,
-// plus an optional `embedding_id` extension on MemoryArtifact.
-//
-// Phase 4 additions:
-//   - CascadeAuditBlock — structured audit trail per response
-//   - AnalyzeResponse   — full typed shape of POST /api/analyze
+// Phase 6 additions (Gemini + RawInput overhaul):
+//   - RawInputType, RawInput — unstructured real-world data schema
+//   - GeminiClassification   — Gemini Flash intake output
+//   - DeepAnalysisResult     — Gemini Pro deep analysis output
+//   - DEEP_ANALYSIS mode     — added to AgentDecisionMode
+//   - AgentDecision extended with attackChain, cvssScore, relatedPatterns
 // ─────────────────────────────────────────────────────────────
 
 /**
@@ -36,14 +35,14 @@ export interface MemoryArtifact {
 }
 
 /**
- * Lightweight trigger shape used internally by the memory service.
- * Derived from AnomalyReport payloads without requiring the full
- * Phase 1 discriminated union at the memory layer.
+ * Lightweight trigger shape used internally by the memory service and
+ * pattern matcher. Derived from GeminiClassification after intake.
+ * NOT exposed via any API endpoint.
  */
 export interface InputTrigger {
-  /** Discriminator: "traffic_spike" | "failed_logins". */
+  /** Discriminator: "traffic_spike" | "failed_logins" | freeform from Gemini. */
   trigger_type: string;
-  /** Source identifier (IP, subnet, user-agent, etc.). */
+  /** Source identifier (IP, filename, service name, etc.). */
   source: string;
   /** Severity score (0.0 – 1.0). */
   severity: number;
@@ -63,7 +62,83 @@ export interface SimilarIncident {
   metadata: Record<string, string>;
 }
 
-export type AgentDecisionMode = "BASELINE" | "COMPOSITE_OVERRIDE" | "BUDGET_FALLBACK";
+// ─────────────────────────────────────────────────────────────
+// Phase 6 — RawInput Schema
+// ─────────────────────────────────────────────────────────────
+
+export type RawInputType =
+  | "code_snippet"     // source code of any language
+  | "file_entry"       // file contents (config, script, binary repr)
+  | "log_lines"        // syslog, auth.log, windows event log, etc
+  | "network_capture"  // IP headers, DNS queries, packet summaries
+  | "process_list"     // running processes + PID + parent
+  | "registry_entry"   // Windows registry key/value pairs
+  | "email_content"    // raw email headers + body (phishing detection)
+  | "hash_list"        // MD5/SHA256 file hashes for IOC matching
+  | "unknown";         // fallback — Gemini figures it out
+
+export interface RawInput {
+  /** Generated: RAW-${Date.now()} */
+  inputId: string;
+  /** Hint from the submitter, can be "unknown" */
+  inputType: RawInputType;
+  /** The raw payload — no length limit enforced here */
+  content: string;
+  /** Optional: original filename if file was submitted */
+  filename?: string;
+  /** ISO timestamp of when this was submitted */
+  submittedAt: string;
+  /** Optional: where this came from ("auth.log", "VS Code", etc.) */
+  source?: string;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Phase 6 — Gemini Classification Output
+// ─────────────────────────────────────────────────────────────
+
+export interface GeminiClassification {
+  isThreat: boolean;
+  /** 0.0–1.0 confidence in the classification */
+  confidence: number;
+  /** Maps to old InputTrigger types or new freeform threat name */
+  threatType: string | null;
+  severity: "low" | "medium" | "high" | "critical" | "none";
+  /** Extracted indicators of compromise */
+  indicators: Record<string, string | number | boolean>;
+  /** Gemini's chain-of-thought (1–3 sentences) */
+  reasoning: string;
+  /** Flash tells CascadeFlow what to do next */
+  recommendedPath: "fast" | "escalate";
+}
+
+// ─────────────────────────────────────────────────────────────
+// Phase 6 — Deep Analysis Output (Gemini Pro)
+// ─────────────────────────────────────────────────────────────
+
+export interface DeepAnalysisResult {
+  /** Detailed prose report, 4–8 sentences, written for a SOC analyst */
+  fullAnalysis: string;
+  /** Ordered sequence of attacker TTPs detected */
+  attackChain: string[];
+  /** Ordered recommended mitigations */
+  mitigationChain: string[];
+  /** Estimated CVSS v3 base score, if applicable */
+  cvssScore: number | null;
+  /** Refined confidence from Flash's initial classification */
+  confidence: number;
+  /** Matching MITRE ATT&CK technique IDs */
+  relatedPatterns: string[];
+}
+
+// ─────────────────────────────────────────────────────────────
+// Agent Decision
+// ─────────────────────────────────────────────────────────────
+
+export type AgentDecisionMode =
+  | "BASELINE"
+  | "COMPOSITE_OVERRIDE"
+  | "DEEP_ANALYSIS"
+  | "BUDGET_FALLBACK";
 
 export interface AgentDecision {
   mode: AgentDecisionMode;
@@ -73,45 +148,47 @@ export interface AgentDecision {
   patternId: string | null;
   patternLabel: string | null;
   confidence: number | null;
+  /** Populated when mode === "DEEP_ANALYSIS" */
+  attackChain?: string[];
+  cvssScore?: number | null;
+  relatedPatterns?: string[];
+  rationale?: string;
 }
 
 // ─────────────────────────────────────────────────────────────
-// Phase 4 — CascadeFlow Types
+// Phase 4 — CascadeFlow Types (shape unchanged)
 // ─────────────────────────────────────────────────────────────
 
 /**
  * Structured CascadeFlow audit block appended to every /api/analyze response.
  */
 export interface CascadeAuditBlock {
-  /** Human-readable complexity description, e.g. "Medium (credential + traffic correlation)". */
   complexity: string;
-  /** Human-readable model path description, e.g. "fast_model → full_model (escalated after pattern match)". */
   modelPath: string;
-  /** Token usage string, e.g. "2450 / 8000". */
   tokensUsed: string;
-  /** Ordered list of key decisions made during this request. */
   decisions: string[];
-  /** Estimated % latency saved vs always using the full model (0–100). */
   latencySavingPct: number;
-  /** Pre-formatted printable audit block matching the POC spec format. */
   formatted: string;
 }
 
 /**
- * Full typed shape of the POST /api/analyze response (Phase 4).
+ * Full typed shape of the POST /api/analyze response.
  */
 export interface AnalyzeResponse {
-  session_id: string;
-  trigger_type: string;
-  recommendation: string;
-  used_memory: boolean;
-  used_cascade: boolean;
+  inputId: string;
+  rawInput: Omit<RawInput, "content"> & { content: string }; // content truncated
+  classification: GeminiClassification;
+  deepAnalysis: DeepAnalysisResult | null;
+  decision: AgentDecision;
+  similarIncidents: SimilarIncident[];
+  cascadeAudit: CascadeAuditBlock;
+  notificationId: string | null;
   context: {
     pastIncidents: SimilarIncident[];
     overridden: boolean;
     confidence: number;
     cascadeAudit?: CascadeAuditBlock;
-    modelPath?: "fast_path" | "escalation_path" | "degraded_fallback";
+    modelPath?: string;
     tokenBudget?: number;
     tokensUsed?: number;
   };

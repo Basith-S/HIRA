@@ -1,6 +1,6 @@
 import fs from "fs/promises";
 import path from "path";
-import type { AgentDecision, InputTrigger } from "../types/memory";
+import type { AgentDecision, GeminiClassification } from "../types/memory";
 
 export type NotificationChannel = "EMAIL" | "SLACK" | "WEBHOOK";
 
@@ -18,24 +18,26 @@ const DEFAULT_RECIPIENT = "soc-team@sentri.internal";
 const LOG_FILE = path.resolve(__dirname, "../../logs/notifications.jsonl");
 
 export async function dispatchNotification(
-  trigger: InputTrigger,
+  classification: GeminiClassification,
   decision: AgentDecision | null,
   channel: NotificationChannel = "SLACK"
 ): Promise<NotificationPayload> {
   const sentAt = new Date().toISOString();
   const notificationId = `NOTIF-${Date.now()}`;
-  const severity = severityLabel(trigger.severity);
-  const subject = buildSubject(severity, trigger.trigger_type);
-  const actionRequired = actionForSeverity(severity);
+  const severity = classification.severity.toUpperCase();
+  const threatType = classification.threatType ?? "unknown";
+  const subject = buildSubject(classification.severity, threatType);
+  const actionRequired = actionForSeverity(classification.severity);
   const mitigationChain =
     decision?.mitigationChain.join(" -> ") ?? "INVESTIGATE -> NOTIFY_OWNER";
 
   const body = [
-    `Incident ID: ${decision?.patternId ?? "NOVEL"}`,
-    `Pattern: ${decision?.patternLabel ?? "Unknown - under investigation"}`,
+    `Threat Type: ${threatType}`,
     `Severity: ${severity}`,
+    `Confidence: ${(classification.confidence * 100).toFixed(1)}%`,
+    `Reasoning: ${classification.reasoning}`,
+    `Mode: ${decision?.mode ?? "NOVEL"}`,
     `Mitigation chain activated: ${mitigationChain}`,
-    `Confidence: ${decision?.confidence != null ? `${(decision.confidence * 100).toFixed(1)}%` : "N/A"}`,
     `Timestamp: ${sentAt}`,
     `Action required: ${actionRequired}`,
   ].join("\n");
@@ -56,29 +58,22 @@ export async function dispatchNotification(
   return payload;
 }
 
-function severityLabel(rawSeverity: number): "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" {
-  if (rawSeverity >= 0.95) return "CRITICAL";
-  if (rawSeverity >= 0.75) return "HIGH";
-  if (rawSeverity >= 0.4) return "MEDIUM";
-  return "LOW";
-}
-
 function buildSubject(
-  severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW",
-  triggerType: string
+  severity: GeminiClassification["severity"],
+  threatType: string
 ): string {
-  if (severity === "CRITICAL") {
-    return `[SENTRI CRITICAL] Composite attack pattern detected - ${triggerType}`;
+  if (severity === "critical") {
+    return `[SENTRI CRITICAL] Critical threat detected — ${threatType}`;
   }
-  if (severity === "HIGH") {
-    return `[SENTRI HIGH] Escalated incident - ${triggerType}`;
+  if (severity === "high") {
+    return `[SENTRI HIGH] High-severity incident — ${threatType}`;
   }
-  return `[SENTRI NOTICE] Anomaly logged - ${triggerType}`;
+  return `[SENTRI NOTICE] Anomaly logged — ${threatType}`;
 }
 
-function actionForSeverity(severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW"): string {
-  if (severity === "CRITICAL") return "Review SENTRI dashboard immediately.";
-  if (severity === "HIGH") return "Review within 30 minutes.";
+function actionForSeverity(severity: GeminiClassification["severity"]): string {
+  if (severity === "critical") return "Review SENTRI dashboard immediately.";
+  if (severity === "high") return "Review within 30 minutes.";
   return "No immediate action required. Logged for review.";
 }
 

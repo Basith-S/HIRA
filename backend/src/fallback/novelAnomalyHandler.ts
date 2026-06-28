@@ -1,11 +1,15 @@
 import { storeIncident } from "../memory/memoryService";
 import { dispatchNotification } from "../notifications/notificationStubs";
-import type { InputTrigger, MemoryArtifact } from "../types/memory";
+import type {
+  GeminiClassification,
+  RawInput,
+  MemoryArtifact,
+} from "../types/memory";
 
 export type NovelAnomalyResponse = {
   status: "NOVEL_ANOMALY";
   action: "INVESTIGATE_AND_NOTIFY";
-  trigger: InputTrigger;
+  inputId: string;
   storedAs: string;
   notificationId: string;
   timestamp: string;
@@ -13,16 +17,19 @@ export type NovelAnomalyResponse = {
 };
 
 export async function handleNovelAnomaly(
-  trigger: InputTrigger
+  input: RawInput,
+  classification: GeminiClassification
 ): Promise<NovelAnomalyResponse> {
   const timestamp = new Date().toISOString();
   const incidentId = `NOV-${Date.now()}`;
+
+  // Build a MemoryArtifact from the classification to store for future pattern learning
   const artifact: MemoryArtifact = {
     incident_id: incidentId,
-    trigger_type: trigger.trigger_type,
+    trigger_type: classification.threatType ?? input.inputType,
     vectors: [],
     mitigation_success: true,
-    hindsight_note: "Novel anomaly - no historical match. Stored for future pattern learning.",
+    hindsight_note: `Novel anomaly — ${classification.reasoning} Content source: ${input.source ?? "unknown"}`,
     created_at: timestamp,
   };
 
@@ -34,7 +41,7 @@ export async function handleNovelAnomaly(
 
   let notificationId = "NOTIF-UNAVAILABLE";
   try {
-    const notification = await dispatchNotification(trigger, null);
+    const notification = await dispatchNotification(classification, null);
     notificationId = notification.notificationId;
   } catch (err) {
     console.error("[Notification] dispatch failed for novel anomaly (non-fatal):", err);
@@ -43,10 +50,10 @@ export async function handleNovelAnomaly(
   return {
     status: "NOVEL_ANOMALY",
     action: "INVESTIGATE_AND_NOTIFY",
-    trigger,
+    inputId: input.inputId,
     storedAs: incidentId,
     notificationId,
     timestamp,
-    message: "Novel anomaly - no historical match. Stored for future pattern learning.",
+    message: `Novel anomaly — no historical match. ${classification.reasoning} Stored for future pattern learning.`,
   };
 }

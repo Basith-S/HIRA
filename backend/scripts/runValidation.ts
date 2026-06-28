@@ -1,124 +1,40 @@
 import axios from "axios";
-
-type SessionFixture = {
-  sessionId: number;
-  sessionLabel: string;
-  trigger_type: string;
-  payload: Record<string, unknown>;
-  edgeOnly?: boolean;
-};
+import { DEMO_SESSIONS, DemoSession } from "../src/demo/sessionScript";
+import type { AgentDecisionMode } from "../src/types/memory";
 
 type ValidationResult = {
   sessionId: number;
   sessionLabel: string;
   baseline: {
+    verdict: "THREAT" | "CLEAN";
     mitigation: string;
     latencyMs: number;
     tokensUsed: number;
-    patternDetected: false;
   };
   sentri: {
-    mitigation: string[];
+    verdict: "THREAT" | "CLEAN" | "NOVEL";
+    isThreat: boolean;
+    severity: string;
+    confidence: number;
+    mode: AgentDecisionMode;
+    mitigationChain: string[];
+    attackChain: string[];
+    cvssScore: number | null;
     latencyMs: number;
     tokensUsed: number;
-    patternDetected: boolean;
-    patternId: string | null;
-    mode: "BASELINE" | "COMPOSITE_OVERRIDE" | "BUDGET_FALLBACK" | "NOVEL_ANOMALY";
-    confidence: number | null;
+    modelPath: string;
   };
   delta: {
+    correctDetection: boolean;
     latencySavingMs: number;
     latencySavingPct: string;
     tokenDelta: number;
     mitigationUpgrade: boolean;
-    compositeDetected: boolean;
+    escalated: boolean;
   };
 };
 
 const BASE_URL = process.env["SENTRI_BASE_URL"] ?? "http://localhost:3001";
-
-const DEMO_SESSIONS: SessionFixture[] = [
-  {
-    sessionId: 1,
-    sessionLabel: "Session 1",
-    trigger_type: "traffic_spike",
-    payload: {
-      timestamp: new Date().toISOString(),
-      source: "203.0.113.42",
-      requests_per_second: 12500,
-      baseline_rps: 800,
-      severity: 0.87,
-      summary: "DDoS-like traffic spike against public ingress",
-    },
-  },
-  {
-    sessionId: 2,
-    sessionLabel: "Session 2",
-    trigger_type: "traffic_spike",
-    payload: {
-      timestamp: new Date().toISOString(),
-      source: "203.0.113.42",
-      requests_per_second: 1800,
-      baseline_rps: 900,
-      severity: 0.5,
-      summary: "Control traffic fluctuation from a previously observed source",
-    },
-  },
-  {
-    sessionId: 3,
-    sessionLabel: "Session 3",
-    trigger_type: "failed_logins",
-    payload: {
-      timestamp: new Date().toISOString(),
-      source: "198.51.100.17",
-      attempt_count: 342,
-      time_window_secs: 60,
-      target_accounts: ["admin@acme.io", "cto@acme.io", "root"],
-      severity: 0.93,
-      summary: "Credential stuffing burst after traffic spike",
-    },
-  },
-  {
-    sessionId: 4,
-    sessionLabel: "Session 4",
-    trigger_type: "traffic_spike",
-    payload: {
-      timestamp: new Date().toISOString(),
-      source: "10.0.0.0/8",
-      requests_per_second: 32000,
-      baseline_rps: 1600,
-      severity: 0.97,
-      summary: "Critical takeover precursor with traffic and credential correlation",
-    },
-  },
-  {
-    sessionId: 5,
-    sessionLabel: "Session 5",
-    trigger_type: "traffic_spike",
-    payload: {
-      timestamp: new Date().toISOString(),
-      source: "10.0.0.0/8",
-      requests_per_second: 45000,
-      baseline_rps: 2000,
-      severity: 0.95,
-      summary: "Final POC composite takeover precursor",
-    },
-  },
-  {
-    sessionId: 6,
-    sessionLabel: "Session 6",
-    trigger_type: "data_exfiltration",
-    payload: {
-      timestamp: new Date().toISOString(),
-      source: "db-prod-01",
-      bytes_out: 900000000,
-      severity: 0.98,
-      raw_log_dump: "exfiltration ".repeat(3200),
-      summary: "Oversized exfiltration context to force token budget fallback",
-    },
-    edgeOnly: true,
-  },
-];
 
 async function main(): Promise<void> {
   await assertBackendAvailable();
@@ -157,57 +73,70 @@ async function resetMemory(): Promise<void> {
   await axios.post(`${BASE_URL}/api/memory/reset`);
 }
 
-async function runSession(session: SessionFixture): Promise<ValidationResult> {
+async function runSession(session: DemoSession): Promise<ValidationResult> {
   const baseline = await postAnalyze(session, true);
   const sentriStartedAt = Date.now();
   const sentri = await postAnalyze(session, false);
   const sentriLatencyMs = Date.now() - sentriStartedAt;
 
   const decision = sentri.data?.decision ?? null;
+  const classification = sentri.data?.classification ?? {};
+  
   const sentriMode = sentri.data?.status === "NOVEL_ANOMALY"
     ? "NOVEL_ANOMALY"
     : decision?.mode ?? "BASELINE";
+    
   const sentriMitigation = decision?.mitigationChain ?? ["INVESTIGATE", "NOTIFY_OWNER"];
   const sentriTokens = extractTokens(sentri.data);
   const baselineLatency = baseline.data?.latencyMs ?? 1150;
   const baselineTokens = baseline.data?.tokensUsed ?? 420;
   const latencySavingMs = baselineLatency - sentriLatencyMs;
 
+  const isThreat = classification.isThreat ?? false;
+  const correctDetection = isThreat === (session.expectThreat ?? true);
+
   return {
     sessionId: session.sessionId,
     sessionLabel: session.sessionLabel,
     baseline: {
+      verdict: "THREAT", // Mock baseline always assumes threat for validation purposes (or handles via old trigger types)
       mitigation: baseline.data?.baselineMitigation ?? baseline.data?.recommendation ?? "",
       latencyMs: baselineLatency,
       tokensUsed: baselineTokens,
-      patternDetected: false,
     },
     sentri: {
-      mitigation: sentriMitigation,
+      verdict: sentriMode === "NOVEL_ANOMALY" ? "NOVEL" : (isThreat ? "THREAT" : "CLEAN"),
+      isThreat,
+      severity: classification.severity ?? "unknown",
+      confidence: classification.confidence ?? 0,
+      mode: sentriMode as AgentDecisionMode,
+      mitigationChain: sentriMitigation,
+      attackChain: decision?.attackChain ?? [],
+      cvssScore: decision?.cvssScore ?? null,
       latencyMs: sentriLatencyMs,
       tokensUsed: sentriTokens,
-      patternDetected: Boolean(decision?.patternDetected),
-      patternId: decision?.patternId ?? null,
-      mode: sentriMode,
-      confidence: decision?.confidence ?? null,
+      modelPath: sentri.data?.context?.modelPath ?? "unknown",
     },
     delta: {
+      correctDetection,
       latencySavingMs,
       latencySavingPct: `${Math.round((latencySavingMs / baselineLatency) * 100)}%`,
       tokenDelta: baselineTokens - sentriTokens,
-      mitigationUpgrade:
-        sentriMitigation.length > 1 || sentriMode === "COMPOSITE_OVERRIDE",
-      compositeDetected: Boolean(decision?.patternDetected),
+      mitigationUpgrade: sentriMitigation.length > 1 || sentriMode === "COMPOSITE_OVERRIDE" || sentriMode === "DEEP_ANALYSIS",
+      escalated: sentri.data?.context?.modelPath?.includes("pro") ?? false,
     },
   };
 }
 
-async function postAnalyze(session: SessionFixture, baseline: boolean) {
+async function postAnalyze(session: DemoSession, baseline: boolean) {
   const suffix = baseline ? "?mode=baseline" : "";
   return axios.post(`${BASE_URL}/api/analyze${suffix}`, {
+    inputType: session.inputType,
+    content: session.content,
+    source: session.source,
+    filename: session.filename,
+    // Provide fallback for legacy fields just in case
     session_id: session.sessionLabel,
-    trigger_type: session.trigger_type,
-    payload: session.payload,
   });
 }
 
@@ -227,39 +156,48 @@ function printReport(results: ValidationResult[]): void {
     results.reduce((sum, result) => sum + result.delta.latencySavingMs, 0) /
       results.length
   );
-  const composites = results.filter((result) => result.delta.compositeDetected).length;
+  const correct = results.filter((result) => result.delta.correctDetection).length;
   const upgrades = results.filter((result) => result.delta.mitigationUpgrade).length;
 
-  console.log("\n+--------------------------------------------------------------------------+");
-  console.log("|                     SENTRI VALIDATION REPORT                            |");
-  console.log("+--------------------------------------------------------------------------+");
-  console.log("| Session | Mode               | Latency d | Token d | Composite | Upgrade |");
-  console.log("+--------------------------------------------------------------------------+");
+  console.log("\n╔══════════════════════════════════════════════════════════════════════════════════╗");
+  console.log("║                        SENTRI VALIDATION REPORT                               ║");
+  console.log("╠══════════════════════════════════════════════════════════════════════════════════╣");
+  console.log("║ S# │ Verdict │ Mode               │ CVSS │ Latency Δ  │ Model                 ║");
+  console.log("╠══════════════════════════════════════════════════════════════════════════════════╣");
   for (const result of results) {
+    const cvssStr = result.sentri.cvssScore ? result.sentri.cvssScore.toFixed(1) : "—";
+    const latencyStr = `${result.delta.latencySavingMs <= 0 ? "" : "+"}${result.delta.latencySavingMs}ms`;
+    let modelShort = result.sentri.modelPath;
+    if (modelShort.includes("flash") && modelShort.includes("pro")) modelShort = "flash → pro";
+    else if (modelShort.includes("flash")) modelShort = "flash";
+    else if (modelShort.includes("pro")) modelShort = "pro";
+
     console.log(
-      `| ${pad(String(result.sessionId), 7)} | ` +
-        `${pad(result.sentri.mode, 18)} | ` +
-        `${pad(`${result.delta.latencySavingMs}ms`, 9)} | ` +
-        `${pad(String(result.delta.tokenDelta), 7)} | ` +
-        `${pad(result.delta.compositeDetected ? "yes" : "no", 9)} | ` +
-        `${pad(result.delta.mitigationUpgrade ? "yes" : "no", 7)} |`
+      `║ ${pad(String(result.sessionId), 2)} │ ` +
+        `${pad(result.sentri.verdict, 7)} │ ` +
+        `${pad(result.sentri.mode, 18)} │ ` +
+        `${pad(cvssStr, 4)} │ ` +
+        `${pad(latencyStr, 10)} │ ` +
+        `${pad(modelShort, 21)} ║`
     );
   }
-  console.log("+--------------------------------------------------------------------------+");
+  console.log("╚══════════════════════════════════════════════════════════════════════════════════╝");
+  console.log(`Threats correctly identified: ${correct}/${results.length}`);
+  const falsePositives = results.filter(r => r.sentri.isThreat && r.baseline.verdict === "CLEAN").length; // Very naive check
+  // console.log(`False positives: ${falsePositives}`);
   console.log(`Aggregate latency saving: ${avgLatency}ms avg`);
-  console.log(`Composite patterns caught: ${composites}/5`);
-  console.log(`Mitigation upgrades: ${upgrades}/5`);
+  console.log(`Mitigation upgrades: ${upgrades}/${results.length}`);
 }
 
 function printRegressionChecks(results: ValidationResult[]): void {
   const session2 = results.find((result) => result.sessionId === 2);
   const session4 = results.find((result) => result.sessionId === 4);
 
-  if (session2?.sentri.mode !== "BASELINE") {
-    console.warn("REGRESSION: Session 2 did not appear as BASELINE.");
+  if (session2 && session2.sentri.verdict !== "CLEAN") {
+    console.warn("REGRESSION: Session 2 did not appear as CLEAN.");
   }
-  if (session4?.sentri.mode !== "COMPOSITE_OVERRIDE") {
-    console.warn("REGRESSION: Session 4 did not appear as COMPOSITE_OVERRIDE.");
+  if (session4 && session4.sentri.mode !== "DEEP_ANALYSIS" && session4.sentri.mode !== "COMPOSITE_OVERRIDE") {
+    console.warn("REGRESSION: Session 4 did not appear as DEEP_ANALYSIS or COMPOSITE_OVERRIDE.");
   }
 }
 

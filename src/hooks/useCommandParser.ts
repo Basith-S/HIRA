@@ -226,9 +226,42 @@ export async function parseAndExecuteCommand(
     }
   }
 
-  // ── Unknown command ───────────────────────────────────────
-  return {
-    kind: "error",
-    message: `unknown command: ${cmd}\ntype 'help' for available commands`,
-  };
+  // ── Unknown command / Raw Input Fallback ──────────────────
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/analyze`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        inputType: "unknown",
+        content: raw,
+        source: "sentri-terminal",
+      }),
+    });
+
+    if (!res.ok) {
+      const body = await res.text();
+      return {
+        kind: "error",
+        message: `raw analyze failed [${res.status}]: ${body}`,
+      };
+    }
+
+    const data = (await res.json()) as SENTRIResponse;
+    // Derive severity label from decision for the UI badge
+    const severityLabel = data.classification?.severity ?? "medium";
+    const triggerType = data.classification?.threatType ?? "RawInput";
+
+    return {
+      kind: "analyze",
+      response: data,
+      triggerType: triggerType,
+      severity: severityLabel,
+    };
+  } catch (err) {
+    return {
+      kind: "error",
+      message: `raw analyze error: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
 }
+
