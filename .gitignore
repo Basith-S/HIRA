@@ -22,3 +22,17 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# ── Phase 2 — Backend ──────────────────────────────────────────
+# JSON incident log — keep the folder, not the data file
+backend/memory/incidents.json
+
+# ChromaDB persistent volume (Docker bind-mount)
+backend/chroma_data/
+
+# Backend node_modules and build output
+backend/node_modules/
+backend/dist/
+
+# Backend secrets — never commit
+backend/.env
