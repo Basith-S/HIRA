@@ -12,9 +12,9 @@
   "app": {
     "windows": [
       {
-        "title": "tauri-app",
-        "width": 800,
-        "height": 600
+        "title": "HIRA — Phase 1 Control Panel",
+        "width": 1100,
+        "height": 780
       }
     ],
     "security": {
