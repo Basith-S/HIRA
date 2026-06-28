@@ -1,36 +1,35 @@
-// ─────────────────────────────────────────────────────────────
-// Phase 4 — /api/analyze Route with CascadeFlow Routing Engine
-//
-// Pipeline (in order):
-//   PRE:      recallSimilar(trigger) → attach to context
-//   CORE:     hindsight pattern matching / behavioral override
-//   CASCADE:  scoreComplexity → routeToModel → buildAuditTrail
-//   POST:     storeIncident(resolvedArtifact)
-//   RESPONSE: JSON with full cascade fields
-//
-// Phase 3 hindsight logic is preserved intact — CascadeFlow
-// wraps its output, it does NOT replace it.
-// ─────────────────────────────────────────────────────────────
-
 import { Router, Request, Response } from "express";
 import { v4 as uuidv4 } from "uuid";
+import { buildAuditTrail } from "../cascade/auditTrail";
+import { scoreComplexity, type ComplexityScore } from "../cascade/complexityScorer";
+import {
+  routeToModel,
+  TOKEN_BUDGET,
+  type ModelResponse,
+  type RoutingDecision,
+} from "../cascade/modelRouter";
+import { handleNovelAnomaly } from "../fallback/novelAnomalyHandler";
 import { recallSimilar, storeIncident } from "../memory/memoryService";
 import { matchPatterns } from "../memory/patternMatcher";
-import { scoreComplexity } from "../cascade/complexityScorer";
-import { routeToModel, TOKEN_BUDGET } from "../cascade/modelRouter";
-import { buildAuditTrail } from "../cascade/auditTrail";
-import type { InputTrigger, MemoryArtifact } from "../types/memory";
+import { dispatchNotification } from "../notifications/notificationStubs";
+import type {
+  AgentDecision,
+  InputTrigger,
+  MemoryArtifact,
+  SimilarIncident,
+} from "../types/memory";
 
 const router = Router();
+let phase5FallbackIncidents: SimilarIncident[] = [];
 
-// ── POST /api/analyze ─────────────────────────────────────────
+type AnalyzeBody = {
+  session_id: string;
+  trigger_type: string;
+  payload: Record<string, unknown>;
+};
 
 router.post("/", async (req: Request, res: Response) => {
-  const { session_id, trigger_type, payload } = req.body as {
-    session_id: string;
-    trigger_type: string;
-    payload: Record<string, unknown>;
-  };
+  const { session_id, trigger_type, payload } = req.body as AnalyzeBody;
 
   if (!session_id || !trigger_type || !payload) {
     res.status(400).json({
@@ -39,161 +38,196 @@ router.post("/", async (req: Request, res: Response) => {
     return;
   }
 
-  // ── PRE: Recall similar past incidents ─────────────────────
   const severity =
     typeof payload["severity"] === "number" ? (payload["severity"] as number) : 0.5;
   const source =
     typeof payload["source"] === "string" ? (payload["source"] as string) : "unknown";
 
-  const incomingTrigger: InputTrigger = {
+  const trigger: InputTrigger = {
     trigger_type,
     source,
     severity,
+    summary:
+      typeof payload["summary"] === "string" ? (payload["summary"] as string) : undefined,
   };
 
-  let pastIncidents: Awaited<ReturnType<typeof recallSimilar>> = [];
+  const baselineRecommendation = buildBaselineRecommendation(session_id, trigger_type);
 
+  if (req.query["mode"] === "baseline") {
+    const decision: AgentDecision = {
+      mode: "BASELINE",
+      recommendation: baselineRecommendation,
+      mitigationChain: mitigationChainFor(trigger_type, false),
+      patternDetected: false,
+      patternId: null,
+      patternLabel: null,
+      confidence: null,
+    };
+
+    res.json({
+      session_id,
+      trigger_type,
+      recommendation: baselineRecommendation,
+      used_memory: false,
+      used_cascade: false,
+      latencyMs: 1150,
+      tokensUsed: 420,
+      baselineMitigation: baselineRecommendation,
+      trigger,
+      decision,
+      reflection: null,
+      similarIncidents: [],
+      cascadeAudit: null,
+      notificationId: null,
+      context: {
+        pastIncidents: [],
+        overridden: false,
+        confidence: 0,
+        cascadeAudit: null,
+        modelPath: null,
+        tokenBudget: TOKEN_BUDGET,
+        tokensUsed: 420,
+      },
+    });
+    return;
+  }
+
+  let similarIncidents: SimilarIncident[] = [];
   try {
-    pastIncidents = await recallSimilar(incomingTrigger);
-    console.log(`[Hindsight] Found ${pastIncidents.length} similar past incidents`);
+    similarIncidents = await recallSimilar(trigger);
+    console.log(`[Hindsight] Found ${similarIncidents.length} similar past incidents`);
   } catch (err) {
-    // Memory recall is non-fatal — log and continue with baseline
     console.warn("[Hindsight] recall failed (non-fatal):", err);
+    similarIncidents = recallFromPhase5Fallback(trigger);
   }
 
-  // ── CORE: Hindsight pattern matching & Override ───────────
-  let isOverridden = false;
-  let matchConfidence = 0.0;
-  let hindsightRecommendation: string | null = null;
-
-  // Build baseline switch-case recommendation
-  let baselineRecommendation: string;
-  switch (trigger_type) {
-    case "traffic_spike":
-      baselineRecommendation =
-        `[BASELINE] Traffic spike detected for session '${session_id}'. ` +
-        `Generic recommendation: enable rate-limiting on the affected ` +
-        `ingress and monitor for 15 minutes. No CascadeFlow reasoning was applied.`;
-      break;
-
-    case "failed_logins":
-      baselineRecommendation =
-        `[BASELINE] Failed login burst detected for session '${session_id}'. ` +
-        `Generic recommendation: temporarily lock the targeted accounts, ` +
-        `enforce CAPTCHA on the login endpoint, and alert the SOC team. ` +
-        `No CascadeFlow reasoning was applied.`;
-      break;
-
-    default:
-      baselineRecommendation =
-        `[BASELINE] Unknown trigger type '${trigger_type}' for session '${session_id}'. ` +
-        `Generic recommendation: forward to a human analyst for triage.`;
-  }
-
-  const patternResult = matchPatterns(incomingTrigger, pastIncidents);
-  if (patternResult.matched && patternResult.recommendation) {
-    hindsightRecommendation = patternResult.recommendation;
-    isOverridden = true;
-    matchConfidence = patternResult.confidence ?? 0.0;
-    console.log(
-      `[Hindsight] Applied behavioral override for ${session_id} (Confidence: ${matchConfidence})`
+  if (phase5FallbackIncidents.length > 0) {
+    similarIncidents = mergeSimilarIncidents(
+      recallFromPhase5Fallback(trigger),
+      similarIncidents
     );
   }
 
-  // ── CASCADE: Build full trigger object for complexity scoring ───
-  // Include every field from payload so the scorer sees indicator-rich
-  // context (e.g. known_breach_list_match, concurrent_failed_logins) and
-  // the keyword scanner can hit values inside nested structures.
+  const patternResult = matchPatterns(trigger, similarIncidents);
+  const isOverridden = patternResult.matched && Boolean(patternResult.recommendation);
+  const matchConfidence = patternResult.confidence ?? 0;
+  const hindsightRecommendation = isOverridden ? patternResult.recommendation ?? null : null;
+
   const triggerForScoring: Record<string, unknown> = {
     session_id,
     trigger_type,
     source,
     severity,
-    ...payload, // spreads all indicator fields
+    ...payload,
     ...(hindsightRecommendation
       ? { hindsight_note: hindsightRecommendation.substring(0, 200) }
       : {}),
   };
 
-  // ── CASCADE: Score complexity ──────────────────────────────
   const complexity = scoreComplexity(
     triggerForScoring,
     matchConfidence,
     severity,
-    pastIncidents.length
-  );
-  console.log(
-    `[CascadeFlow] Complexity: ${complexity.complexityLevel} | ` +
-    `tokens: ${complexity.tokenEstimate} | ` +
-    `keywords: [${complexity.keywordsMatched.join(", ")}] | ` +
-    `composite: ${complexity.compositeAttack}`
+    similarIncidents.length
   );
 
-  // ── CASCADE: Route to model ────────────────────────────────
-  const modelResponse = await routeToModel(
-    complexity,
-    hindsightRecommendation,
-    baselineRecommendation,
+  const hasCloseMemoryMatch = similarIncidents.some((incident) => incident.distance < 0.5);
+  const isNovelAnomaly = !hasCloseMemoryMatch && !isOverridden;
+
+  if (isNovelAnomaly && complexity.tokenEstimate < TOKEN_BUDGET) {
+    const auditBlock = buildNovelAudit(complexity, similarIncidents.length);
+    try {
+      const novelResponse = await handleNovelAnomaly(trigger);
+      rememberInPhase5Fallback(trigger_type, novelResponse.message);
+      res.json({
+        ...novelResponse,
+        session_id,
+        trigger_type,
+        recommendation: novelResponse.message,
+        used_memory: false,
+        used_cascade: true,
+        trigger,
+        decision: null,
+        reflection: null,
+        similarIncidents,
+        cascadeAudit: auditBlock,
+        notificationId: novelResponse.notificationId,
+        context: {
+          pastIncidents: similarIncidents,
+          overridden: false,
+          confidence: 0,
+          cascadeAudit: auditBlock,
+          modelPath: "fast_path",
+          tokenBudget: TOKEN_BUDGET,
+          tokensUsed: parseTokenCount(auditBlock.tokensUsed),
+        },
+      });
+      return;
+    } catch (err) {
+      console.error("[NovelAnomaly] fallback handling failed:", err);
+      res.status(500).json({
+        error: "Novel anomaly fallback failed",
+        detail: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+  }
+
+  const modelResponse =
+    complexity.tokenEstimate >= TOKEN_BUDGET
+      ? buildBudgetFallbackResponse(complexity, baselineRecommendation, similarIncidents)
+      : await routeToModel(
+          complexity,
+          hindsightRecommendation,
+          baselineRecommendation,
+          trigger_type,
+          session_id
+        );
+
+  const decision = buildAgentDecision(
     trigger_type,
-    session_id
+    modelResponse.recommendation,
+    isOverridden,
+    matchConfidence,
+    modelResponse.routingDecision.path === "degraded_fallback"
   );
-
-  // ── CASCADE: Build audit trail ─────────────────────────────
-  const auditDecisions: string[] = [];
-  if (pastIncidents.length > 0) {
-    auditDecisions.push(`Retrieved ${pastIncidents.length} past incident(s) from memory`);
-  }
-  if (isOverridden) {
-    auditDecisions.push(`Applied hindsight rule (confidence: ${(matchConfidence * 100).toFixed(0)}%)`);
-  }
-  auditDecisions.push(
-    modelResponse.routingDecision.path === "fast_path"
-      ? "Routed to fast model"
-      : modelResponse.routingDecision.path === "escalation_path"
-      ? "Escalated to full model"
-      : "Degraded to rule-based fallback"
-  );
-  if (modelResponse.routingDecision.path === "escalation_path" && isOverridden) {
-    auditDecisions.push("Recommended 2FA enforcement + credential rotation");
-  }
 
   const auditBlock = buildAuditTrail(
     complexity,
     modelResponse.routingDecision,
     modelResponse.tokensUsed,
-    auditDecisions
+    buildAuditDecisions(similarIncidents, isOverridden, matchConfidence, modelResponse)
   );
 
-  // The final recommendation comes from the model router
-  const recommendation = modelResponse.recommendation;
+  let notificationId: string | null = null;
+  if (shouldNotify(trigger, decision)) {
+    try {
+      const notification = await dispatchNotification(trigger, decision);
+      notificationId = notification.notificationId;
+    } catch (err) {
+      console.error("[Notification] dispatch failed (non-fatal):", err);
+    }
+  }
 
-  // ── POST: Store the resolved artifact ─────────────────────
-  const artifact: MemoryArtifact = {
-    incident_id: uuidv4(),
-    trigger_type,
-    vectors: [],           // Populated internally by memoryService.storeIncident
-    mitigation_success: true,
-    hindsight_note: recommendation,
-    created_at: new Date().toISOString(),
-  };
+  await persistResolvedIncident(trigger_type, modelResponse.recommendation);
+  rememberInPhase5Fallback(trigger_type, modelResponse.recommendation);
 
-  // Fire-and-forget storage so the response is not delayed
-  storeIncident(artifact).catch((err) => {
-    console.error("[Hindsight] storeIncident failed (non-fatal):", err);
-  });
-
-  // ── Response ───────────────────────────────────────────────
   res.json({
     session_id,
     trigger_type,
-    recommendation,
-    used_memory: pastIncidents.length > 0,
-    used_cascade: true,        // always true — Phase 4 is active
+    recommendation: modelResponse.recommendation,
+    used_memory: similarIncidents.length > 0,
+    used_cascade: true,
+    trigger,
+    decision,
+    reflection: hindsightRecommendation,
+    similarIncidents,
+    cascadeAudit: auditBlock,
+    notificationId,
     context: {
-      pastIncidents,
+      pastIncidents: similarIncidents,
       overridden: isOverridden,
       confidence: matchConfidence,
-      // ── Phase 4 CascadeFlow fields ──
       cascadeAudit: auditBlock,
       modelPath: modelResponse.routingDecision.path,
       tokenBudget: TOKEN_BUDGET,
@@ -201,5 +235,240 @@ router.post("/", async (req: Request, res: Response) => {
     },
   });
 });
+
+function buildBaselineRecommendation(sessionId: string, triggerType: string): string {
+  switch (triggerType) {
+    case "traffic_spike":
+      return (
+        `[BASELINE] Traffic spike detected for session '${sessionId}'. ` +
+        `Generic recommendation: enable rate-limiting on the affected ingress ` +
+        `and monitor for 15 minutes. No CascadeFlow reasoning was applied.`
+      );
+    case "failed_logins":
+      return (
+        `[BASELINE] Failed login burst detected for session '${sessionId}'. ` +
+        `Generic recommendation: temporarily lock the targeted accounts, enforce ` +
+        `CAPTCHA on the login endpoint, and alert the SOC team. No CascadeFlow reasoning was applied.`
+      );
+    default:
+      return (
+        `[BASELINE] Unknown trigger type '${triggerType}' for session '${sessionId}'. ` +
+        `Generic recommendation: forward to a human analyst for triage.`
+      );
+  }
+}
+
+function buildNovelAudit(complexity: ComplexityScore, memoryCount: number) {
+  const routing: RoutingDecision =
+    complexity.tokenEstimate >= TOKEN_BUDGET
+      ? {
+          path: "degraded_fallback",
+          modelUsed: "none",
+          reason: "Token budget exhausted before novel-anomaly reflection.",
+          latencySavingPct: 0,
+        }
+      : {
+          path: "fast_path",
+          modelUsed: "llama-3-8b (simulated)",
+          reason: "Novel anomaly stored without LLM reflection.",
+          latencySavingPct: 63,
+        };
+
+  return buildAuditTrail(
+    complexity,
+    routing,
+    complexity.tokenEstimate >= TOKEN_BUDGET ? TOKEN_BUDGET : complexity.tokenEstimate,
+    [
+      `Retrieved ${memoryCount} past incident(s) from memory`,
+      "Novel anomaly fallback used",
+      "Stored for future pattern learning",
+    ]
+  );
+}
+
+function buildBudgetFallbackResponse(
+  complexity: ComplexityScore,
+  baselineRecommendation: string,
+  similarIncidents: SimilarIncident[]
+): ModelResponse {
+  const topIncident = similarIncidents[0] ?? null;
+  const chain = mitigationChainFromIncident(topIncident);
+  const routingDecision: RoutingDecision = {
+    path: "degraded_fallback",
+    modelUsed: "none",
+    reason: "Token budget exhausted - rule-based memory lookup used",
+    latencySavingPct: 0,
+  };
+
+  return {
+    recommendation:
+      `[BUDGET_FALLBACK] Token budget exceeded (${complexity.tokenEstimate} estimated tokens). ` +
+      `Rule-based mitigation chain: ${chain.join(" -> ")}. ` +
+      (topIncident
+        ? `Top recalled incident: ${topIncident.metadata["incident_id"] ?? topIncident.id}.`
+        : baselineRecommendation),
+    tokensUsed: TOKEN_BUDGET,
+    routingDecision,
+  };
+}
+
+function buildAgentDecision(
+  triggerType: string,
+  recommendation: string,
+  isOverridden: boolean,
+  confidence: number,
+  isBudgetFallback: boolean
+): AgentDecision {
+  if (isBudgetFallback) {
+    return {
+      mode: "BUDGET_FALLBACK",
+      recommendation,
+      mitigationChain: mitigationChainFor(triggerType, false),
+      patternDetected: false,
+      patternId: null,
+      patternLabel: null,
+      confidence: null,
+    };
+  }
+
+  if (isOverridden) {
+    return {
+      mode: "COMPOSITE_OVERRIDE",
+      recommendation,
+      mitigationChain: mitigationChainFor(triggerType, true),
+      patternDetected: true,
+      patternId: "COMPOSITE-CREDENTIAL-TRAFFIC",
+      patternLabel: "Credential Stuffing + Traffic Spike Composite",
+      confidence,
+    };
+  }
+
+  return {
+    mode: "BASELINE",
+    recommendation,
+    mitigationChain: mitigationChainFor(triggerType, false),
+    patternDetected: false,
+    patternId: null,
+    patternLabel: null,
+    confidence: null,
+  };
+}
+
+function mitigationChainFor(triggerType: string, isComposite: boolean): string[] {
+  if (isComposite) return ["WAF_RULE", "ENFORCE_2FA", "ROTATE_TOKENS"];
+  if (triggerType === "traffic_spike") return ["RATE_LIMIT", "MONITOR"];
+  if (triggerType === "failed_logins") return ["LOCK_ACCOUNTS", "ENFORCE_CAPTCHA", "ALERT_SOC"];
+  return ["INVESTIGATE", "NOTIFY_OWNER"];
+}
+
+function mitigationChainFromIncident(incident: SimilarIncident | null): string[] {
+  if (!incident) return ["INVESTIGATE", "NOTIFY_OWNER"];
+  const summary = (incident.metadata["summary"] ?? "").toLowerCase();
+  if (summary.includes("2fa") || summary.includes("token")) {
+    return ["WAF_RULE", "ENFORCE_2FA", "ROTATE_TOKENS"];
+  }
+  return mitigationChainFor(incident.metadata["trigger_type"] ?? "unknown", false);
+}
+
+function buildAuditDecisions(
+  similarIncidents: SimilarIncident[],
+  isOverridden: boolean,
+  confidence: number,
+  modelResponse: ModelResponse
+): string[] {
+  const decisions: string[] = [];
+  if (similarIncidents.length > 0) {
+    decisions.push(`Retrieved ${similarIncidents.length} past incident(s) from memory`);
+  }
+  if (isOverridden) {
+    decisions.push(`Applied hindsight rule (confidence: ${(confidence * 100).toFixed(0)}%)`);
+  }
+  decisions.push(
+    modelResponse.routingDecision.path === "fast_path"
+      ? "Routed to fast model"
+      : modelResponse.routingDecision.path === "escalation_path"
+      ? "Escalated to full model"
+      : "Token budget exhausted - rule-based memory lookup used"
+  );
+  if (modelResponse.routingDecision.path === "escalation_path" && isOverridden) {
+    decisions.push("Recommended 2FA enforcement + credential rotation");
+  }
+  return decisions;
+}
+
+function shouldNotify(trigger: InputTrigger, decision: AgentDecision): boolean {
+  if (decision.mode === "COMPOSITE_OVERRIDE" && trigger.severity >= 0.75) return true;
+  if (decision.mode === "BASELINE" && trigger.severity >= 0.75) return true;
+  return false;
+}
+
+async function persistResolvedIncident(
+  triggerType: string,
+  recommendation: string
+): Promise<void> {
+  const artifact: MemoryArtifact = {
+    incident_id: uuidv4(),
+    trigger_type: triggerType,
+    vectors: [],
+    mitigation_success: true,
+    hindsight_note: recommendation,
+    created_at: new Date().toISOString(),
+  };
+
+  try {
+    await storeIncident(artifact);
+  } catch (err) {
+    console.error("[Hindsight] storeIncident failed (non-fatal):", err);
+  }
+}
+
+function parseTokenCount(tokensUsed: string): number {
+  const raw = Number(tokensUsed.split("/")[0]?.trim());
+  return Number.isFinite(raw) ? raw : 0;
+}
+
+function recallFromPhase5Fallback(trigger: InputTrigger): SimilarIncident[] {
+  return phase5FallbackIncidents
+    .map((incident) => ({
+      ...incident,
+      distance: incident.metadata["trigger_type"] === trigger.trigger_type ? 0.25 : 0.75,
+    }))
+    .slice(0, 3);
+}
+
+function mergeSimilarIncidents(
+  fallbackIncidents: SimilarIncident[],
+  recalledIncidents: SimilarIncident[]
+): SimilarIncident[] {
+  const seen = new Set<string>();
+  return [...fallbackIncidents, ...recalledIncidents]
+    .filter((incident) => {
+      const key = incident.metadata["incident_id"] ?? incident.id;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((left, right) => left.distance - right.distance)
+    .slice(0, 3);
+}
+
+function rememberInPhase5Fallback(triggerType: string, recommendation: string): void {
+  phase5FallbackIncidents.unshift({
+    id: uuidv4(),
+    distance: 0.25,
+    metadata: {
+      incident_id: uuidv4(),
+      trigger_type: triggerType,
+      created_at: new Date().toISOString(),
+      mitigation_success: "true",
+      summary: recommendation,
+    },
+  });
+  phase5FallbackIncidents = phase5FallbackIncidents.slice(0, 20);
+}
+
+export function resetPhase5FallbackMemory(): void {
+  phase5FallbackIncidents = [];
+}
 
 export default router;

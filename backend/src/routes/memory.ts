@@ -9,6 +9,7 @@
 
 import { Router, Request, Response } from "express";
 import { recallSimilar, resetMemory } from "../memory/memoryService";
+import { resetPhase5FallbackMemory } from "./analyze";
 import type { InputTrigger } from "../types/memory";
 
 const router = Router();
@@ -54,6 +55,7 @@ router.get("/recall", async (req: Request, res: Response) => {
 router.post("/reset", async (req: Request, res: Response) => {
   try {
     await resetMemory();
+    resetPhase5FallbackMemory();
     res.json({ status: "success", message: "Memory subsystems cleared successfully." });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);

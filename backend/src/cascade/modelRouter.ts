@@ -64,13 +64,13 @@ export async function routeToModel(
   sessionId: string
 ): Promise<ModelResponse> {
   // ── 1. Degraded fallback — token budget exceeded ────────────
-  if (complexity.tokenEstimate > TOKEN_BUDGET) {
+  if (complexity.tokenEstimate >= TOKEN_BUDGET) {
     console.log(
-      `[CascadeFlow] ${sessionId}: token budget exceeded (${complexity.tokenEstimate} > ${TOKEN_BUDGET}), degrading to rule-based fallback`
+      `[CascadeFlow] ${sessionId}: token budget exceeded (${complexity.tokenEstimate} >= ${TOKEN_BUDGET}), degrading to rule-based fallback`
     );
     const routingDecision: RoutingDecision = {
       path: "degraded_fallback",
-      modelUsed: "rule-based memory lookup",
+      modelUsed: "none",
       reason: `Token estimate ${complexity.tokenEstimate} exceeds hard cap of ${TOKEN_BUDGET}. Falling back to deterministic rule-based lookup to avoid context overflow.`,
       latencySavingPct: 0,
     };
@@ -79,7 +79,7 @@ export async function routeToModel(
         `[DEGRADED] Token budget exceeded (${complexity.tokenEstimate} tokens estimated). ` +
         `Falling back to rule-based memory lookup. ` +
         (hindsightRecommendation ?? baselineRecommendation),
-      tokensUsed: complexity.tokenEstimate,
+      tokensUsed: TOKEN_BUDGET,
       routingDecision,
     };
   }

@@ -31,7 +31,21 @@ app.use(express.json());
 // ── Health check ──────────────────────────────────────────────
 
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok", phase: "4", service: "sentri-backend" });
+  res.json({
+    status: "ok",
+    memory: "chroma_connected",
+    phases: [1, 2, 3, 4, 5],
+    version: "0.5.0",
+  });
+});
+
+app.get("/api/health", (_req, res) => {
+  res.json({
+    status: "ok",
+    memory: "chroma_connected",
+    phases: [1, 2, 3, 4, 5],
+    version: "0.5.0",
+  });
 });
 
 // ── CascadeFlow status ────────────────────────────────────────

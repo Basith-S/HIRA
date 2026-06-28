@@ -38,6 +38,26 @@ export function buildAuditTrail(
   tokensUsed: number,
   decisions: string[]
 ): CascadeAuditBlock {
+  if (routing.path === "degraded_fallback" && tokensUsed >= 8000) {
+    const formatted = [
+      `[CascadeFlow Audit]`,
+      `- Complexity: BUDGET_EXCEEDED`,
+      `- Model Path: none (rule-based fallback)`,
+      `- Tokens used: 8000 / 8000`,
+      `- Decisions: Token budget exhausted - rule-based memory lookup used`,
+      `- Latency saving: N/A`,
+    ].join("\n");
+
+    return {
+      complexity: "BUDGET_EXCEEDED",
+      modelPath: "none (rule-based fallback)",
+      tokensUsed: "8000 / 8000",
+      decisions: ["Token budget exhausted - rule-based memory lookup used"],
+      latencySavingPct: 0,
+      formatted,
+    };
+  }
+
   // ── Human-readable complexity label ────────────────────────
   const keywordSuffix =
     complexity.keywordsMatched.length > 0

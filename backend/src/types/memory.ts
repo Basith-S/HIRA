@@ -63,6 +63,18 @@ export interface SimilarIncident {
   metadata: Record<string, string>;
 }
 
+export type AgentDecisionMode = "BASELINE" | "COMPOSITE_OVERRIDE" | "BUDGET_FALLBACK";
+
+export interface AgentDecision {
+  mode: AgentDecisionMode;
+  recommendation: string;
+  mitigationChain: string[];
+  patternDetected: boolean;
+  patternId: string | null;
+  patternLabel: string | null;
+  confidence: number | null;
+}
+
 // ─────────────────────────────────────────────────────────────
 // Phase 4 — CascadeFlow Types
 // ─────────────────────────────────────────────────────────────
