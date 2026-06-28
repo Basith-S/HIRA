@@ -139,12 +139,39 @@ function App() {
             context: data.context,
           };
         } else {
-          // ── Tauri Rust baseline (Phase 1) ──
-          const result = await invoke<BaselineResult>(
-            "analyze_incident_baseline",
-            { report }
-          );
-          unified = { ...result };
+          // ── Tauri Rust baseline (Phase 1), or browser fallback ──
+          const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
+          if (isTauri) {
+            const result = await invoke<BaselineResult>(
+              "analyze_incident_baseline",
+              { report }
+            );
+            unified = { ...result };
+          } else {
+            // Running in browser without Tauri — call backend baseline mode
+            const res = await fetch(`${BACKEND_URL}/api/analyze?mode=baseline`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                session_id: report.session_id,
+                trigger_type: report.trigger_type,
+                payload: report.payload,
+              }),
+            });
+            if (!res.ok) {
+              const errBody = await res.text();
+              throw new Error(`Backend error ${res.status}: ${errBody}`);
+            }
+            const data = await res.json();
+            unified = {
+              session_id: data.session_id,
+              trigger_type: data.trigger_type,
+              recommendation: data.recommendation,
+              used_memory: data.used_memory ?? false,
+              used_cascade: data.used_cascade ?? false,
+              context: data.context,
+            };
+          }
         }
 
         setResponses((prev) => [unified, ...prev]);
