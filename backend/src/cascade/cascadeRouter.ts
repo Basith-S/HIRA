@@ -23,13 +23,14 @@ import type {
   CascadeAuditBlock,
 } from "../types/memory";
 
+const flashModel = process.env.GEMINI_FLASH_MODEL || "gemini-2.5-flash";
+const proModel = process.env.GEMINI_PRO_MODEL || "gemini-2.5-flash";
+
 // Initialize the CascadeFlow Agent
 const agent = new CascadeAgent({
   models: [
-    { name: "gemini-2.5-flash", provider: "google", cost: 0.000075 },
-    // Use gemini-2.5-flash here as well to bypass Pro free-tier quota limits (0 TPM),
-    // but we will label it as gemini-2.5-pro in the UI logs so the simulation remains realistic.
-    { name: "gemini-2.5-flash", provider: "google", cost: 0.00125 }
+    { name: flashModel, provider: "google", cost: 0.000075 },
+    { name: proModel, provider: "google", cost: 0.00125 }
   ],
   quality: {
     threshold: 0.7,
@@ -51,9 +52,12 @@ export interface CascadeRouterResult {
 const CONSOLIDATED_PROMPT = `You are SENTRI's security analyzer. 
 You receive raw security data and a list of structurally similar past incidents from vector memory.
 
-Analyze the content and produce a JSON object (ONLY JSON, no markdown fences).
-If the threat is straightforward or benign, keep the analysis brief. 
-If the threat is complex, severe, or high-risk, populate the deep analysis fields thoroughly.
+Analyze the content and produce a JSON object.
+CRITICAL: Respond ONLY with a valid JSON object. Do not include markdown code fences (like \`\`\`json), do not include any preamble, introduction, or text outside the JSON.
+
+CRITICAL FOR JSON VALIDITY:
+- Never nest double quotes inside double quotes in string fields (e.g. do not write "executed "Bypass" policy"). Instead, use single quotes for nested quotes (e.g., "executed 'Bypass' policy").
+- Strictly ensure all JSON syntax is correct, with appropriate commas and braces.
 
 Schema:
 {
@@ -73,11 +77,11 @@ Schema:
 }`;
 
 function extractJson(raw: string): string {
-  const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fenceMatch?.[1]) return fenceMatch[1].trim();
   const start = raw.indexOf("{");
   const end = raw.lastIndexOf("}");
-  if (start !== -1 && end !== -1 && end > start) return raw.slice(start, end + 1);
+  if (start !== -1 && end !== -1 && end > start) {
+    return raw.slice(start, end + 1);
+  }
   return raw;
 }
 
@@ -95,7 +99,11 @@ export async function runCascade(
   const tokenEstimate = Math.ceil(input.content.length / 4) + SYSTEM_PROMPT_OVERHEAD;
 
   if (tokenEstimate >= TOKEN_BUDGET) {
-    console.log(`[CascadeRouter] Budget exceeded (${tokenEstimate} >= ${TOKEN_BUDGET})`);
+    console.log(
+      `[CascadeRouter] Budget exceeded (${tokenEstimate} >= ${TOKEN_BUDGET}). ` +
+      `Content length: ${input.content?.length}. ` +
+      `Preview: "${input.content?.substring(0, 100)}..."`
+    );
     return getBudgetFallback(input.inputType);
   }
 
@@ -118,22 +126,23 @@ export async function runCascade(
     result = await agent.run([
       { role: "system", content: CONSOLIDATED_PROMPT },
       { role: "user", content: userPrompt }
-    ]);
+    ], { maxTokens: 2048 });
   } catch (err) {
-    console.warn(`[CascadeRouter] Primary CascadeAgent failed (likely Gemini Pro quota limit). Falling back to Flash-only analysis...`, err);
+    console.warn(`[CascadeRouter] Primary CascadeAgent failed. Falling back to Flash-only analysis...`, err);
     fallbackUsed = true;
     result = await fallbackAgent.run([
       { role: "system", content: CONSOLIDATED_PROMPT },
       { role: "user", content: userPrompt }
-    ]);
+    ], { maxTokens: 2048 });
   }
 
   let parsed: any;
   try {
     parsed = JSON.parse(extractJson(result.content));
   } catch (err) {
-    console.error("[CascadeRouter] JSON Parse Failed", err);
-    return getBudgetFallback(input.inputType);
+    console.error("[CascadeRouter] JSON Parse Failed:", err);
+    console.error("[CascadeRouter] Raw content was:", result.content);
+    return getParseFailureFallback(input.inputType, result.content);
   }
 
   // Map to our internal schemas
@@ -210,4 +219,24 @@ function getBudgetFallback(inputType: string): CascadeRouterResult {
     tokensUsed: TOKEN_BUDGET
   };
 }
+
+function getParseFailureFallback(inputType: string, rawContent: string): CascadeRouterResult {
+  const classification: GeminiClassification = {
+    isThreat: false, confidence: 0.5, threatType: null, severity: "none",
+    indicators: {}, reasoning: `Failed to parse analysis JSON. Raw response: \n${rawContent.substring(0, 2000)}`, recommendedPath: "fast"
+  };
+  return {
+    classification,
+    deepAnalysis: null,
+    cascadeAudit: {
+      complexity: "none", modelPath: "gemini-2.5-flash (parsing fallback)", tokensUsed: `0 / ${TOKEN_BUDGET}`,
+      decisions: ["JSON parsing failed"], latencySavingPct: 0,
+      formatted: `[CascadeFlow Audit]\nJSON parsing failed. Raw response: \n${rawContent.substring(0, 2000)}`
+    },
+    escalated: false,
+    budgetExceeded: false,
+    tokensUsed: 0
+  };
+}
+
 

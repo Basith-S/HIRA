@@ -250,7 +250,7 @@ router.post("/", async (req: Request, res: Response) => {
         context: {
           pastIncidents: similarIncidents,
           overridden: false,
-          confidence: 0,
+          confidence: classification.confidence,
           cascadeAudit,
           modelPath: cascadeResult.escalated
             ? `${process.env["GEMINI_FLASH_MODEL"]} → ${process.env["GEMINI_PRO_MODEL"]}`

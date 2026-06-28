@@ -42,6 +42,29 @@ export function buildSummaryText(
   return `[${type}] severity:${severity.toFixed(2)} — ${summary}`;
 }
 
+async function postWithRetry<T>(
+  url: string,
+  data: any,
+  config: any,
+  retries = 4,
+  delay = 5000
+): Promise<{ data: T; status: number }> {
+  try {
+    const response = await axios.post<T>(url, data, config);
+    return { data: response.data, status: response.status };
+  } catch (err: any) {
+    const status = err.response?.status;
+    if (retries > 0 && (status === 429 || (status >= 500 && status < 600))) {
+      console.warn(
+        `[Embedder] Voyage API returned ${status}. Retrying in ${delay}ms... (${retries} retries left)`
+      );
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      return postWithRetry<T>(url, data, config, retries - 1, delay * 2);
+    }
+    throw err;
+  }
+}
+
 /**
  * Generate a Voyage AI embedding vector for the given text.
  *
@@ -79,7 +102,7 @@ export async function generateEmbedding(text: string): Promise<number[]> {
   }
 
   try {
-    const response = await axios.post<VoyageEmbeddingResponse>(
+    const { data, status } = await postWithRetry<VoyageEmbeddingResponse>(
       VOYAGE_API_URL,
       {
         input: [text],
@@ -94,9 +117,8 @@ export async function generateEmbedding(text: string): Promise<number[]> {
       }
     );
 
-    const data = response.data;
     if (!data.data || data.data.length === 0) {
-      throw new EmbeddingError("Voyage API returned an empty embedding list.", response.status, data);
+      throw new EmbeddingError("Voyage API returned an empty embedding list.", status, data);
     }
 
     return data.data[0].embedding;
