@@ -252,14 +252,20 @@ export function AnalysisOutput({ incident, helpMode, errorText }: AnalysisOutput
   const tokensStr = tokensUsed != null ? `${tokensUsed}/${tokenBudget}` : "—";
 
   const modelPathRaw = r.context?.modelPath;
+  // Prefer the human-readable audit.modelPath which carries real model names
+  // (e.g. "gemini-1.5-flash (escalated)") from the post-pull Gemini integration.
+  // Fall back to path enum labels when audit is absent.
   const modelStr =
-    modelPathRaw === "fast_path"
-      ? "fast → fast"
+    audit?.modelPath
+      ? audit.modelPath
+      : modelPathRaw === "fast_path"
+      ? "fast model"
       : modelPathRaw === "escalation_path"
       ? "fast → full"
       : modelPathRaw === "degraded_fallback"
       ? "degraded"
       : "—";
+
 
   const patternStr = decision?.patternLabel ?? decision?.patternId ?? "—";
 
