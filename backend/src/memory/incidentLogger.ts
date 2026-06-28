@@ -66,3 +66,17 @@ export async function logIncident(artifact: MemoryArtifact): Promise<void> {
 function isNodeError(err: unknown): err is NodeJS.ErrnoException {
   return typeof err === "object" && err !== null && "code" in err;
 }
+
+/**
+ * Clear the JSON incident log.
+ */
+export async function resetIncidentsLog(): Promise<void> {
+  await ensureDir();
+  try {
+    await fs.writeFile(INCIDENTS_FILE, "[]", "utf-8");
+    console.log(`[IncidentLogger] Cleared incidents log → ${INCIDENTS_FILE}`);
+  } catch (err) {
+    console.error("[IncidentLogger] Failed to clear incidents log:", err);
+    throw err;
+  }
+}

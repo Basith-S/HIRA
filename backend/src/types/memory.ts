@@ -4,6 +4,10 @@
 // These mirror the Phase 1 schemas exactly.  The only additions
 // are the backend-internal types: InputTrigger and SimilarIncident,
 // plus an optional `embedding_id` extension on MemoryArtifact.
+//
+// Phase 4 additions:
+//   - CascadeAuditBlock — structured audit trail per response
+//   - AnalyzeResponse   — full typed shape of POST /api/analyze
 // ─────────────────────────────────────────────────────────────
 
 /**
@@ -57,4 +61,46 @@ export interface SimilarIncident {
   distance: number;
   /** Metadata stored alongside the embedding in ChromaDB. */
   metadata: Record<string, string>;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Phase 4 — CascadeFlow Types
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Structured CascadeFlow audit block appended to every /api/analyze response.
+ */
+export interface CascadeAuditBlock {
+  /** Human-readable complexity description, e.g. "Medium (credential + traffic correlation)". */
+  complexity: string;
+  /** Human-readable model path description, e.g. "fast_model → full_model (escalated after pattern match)". */
+  modelPath: string;
+  /** Token usage string, e.g. "2450 / 8000". */
+  tokensUsed: string;
+  /** Ordered list of key decisions made during this request. */
+  decisions: string[];
+  /** Estimated % latency saved vs always using the full model (0–100). */
+  latencySavingPct: number;
+  /** Pre-formatted printable audit block matching the POC spec format. */
+  formatted: string;
+}
+
+/**
+ * Full typed shape of the POST /api/analyze response (Phase 4).
+ */
+export interface AnalyzeResponse {
+  session_id: string;
+  trigger_type: string;
+  recommendation: string;
+  used_memory: boolean;
+  used_cascade: boolean;
+  context: {
+    pastIncidents: SimilarIncident[];
+    overridden: boolean;
+    confidence: number;
+    cascadeAudit?: CascadeAuditBlock;
+    modelPath?: "fast_path" | "escalation_path" | "degraded_fallback";
+    tokenBudget?: number;
+    tokensUsed?: number;
+  };
 }

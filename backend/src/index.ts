@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────
-// Express Server Entry Point — SENTRI Backend (Phase 2)
+// Express Server Entry Point — SENTRI Backend (Phase 4)
 //
 // Boot order:
 //   1. Load .env
@@ -16,6 +16,7 @@ dotenv.config({ path: path.resolve(__dirname, "../.env") });
 import express from "express";
 import cors from "cors";
 import { initVectorStore } from "./memory/vectorStore";
+import { TOKEN_BUDGET } from "./cascade/modelRouter";
 import analyzeRouter from "./routes/analyze";
 import memoryRouter from "./routes/memory";
 
@@ -30,7 +31,25 @@ app.use(express.json());
 // ── Health check ──────────────────────────────────────────────
 
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok", phase: "2", service: "sentri-backend" });
+  res.json({ status: "ok", phase: "4", service: "sentri-backend" });
+});
+
+// ── CascadeFlow status ────────────────────────────────────────
+
+app.get("/api/cascade/status", (_req, res) => {
+  res.json({
+    engine: "CascadeFlow",
+    phase: 4,
+    status: "active",
+    tokenBudget: TOKEN_BUDGET,
+    description:
+      "CascadeFlow Routing Engine — scores complexity, routes to fast/escalation/degraded model path, and appends a structured audit trail to every /api/analyze response.",
+    paths: {
+      fast_path: "llama-3-8b (simulated) — low/medium complexity, ≤8k tokens",
+      escalation_path: "gpt-4o (simulated) — high complexity or composite attack",
+      degraded_fallback: "rule-based memory lookup — token budget exceeded",
+    },
+  });
 });
 
 // ── Routes ────────────────────────────────────────────────────
@@ -46,9 +65,11 @@ async function bootstrap(): Promise<void> {
 
   app.listen(PORT, () => {
     console.log(`[SENTRI] Backend running on http://localhost:${PORT}`);
-    console.log(`[SENTRI] Phase 2 — Hindsight memory subsystem active`);
+    console.log(`[SENTRI] Phase 4 — CascadeFlow routing engine active`);
     console.log(`[SENTRI]   POST  /api/analyze`);
     console.log(`[SENTRI]   GET   /api/memory/recall?type=&severity=`);
+    console.log(`[SENTRI]   POST  /api/memory/reset`);
+    console.log(`[SENTRI]   GET   /api/cascade/status`);
     console.log(`[SENTRI]   GET   /health`);
   });
 }

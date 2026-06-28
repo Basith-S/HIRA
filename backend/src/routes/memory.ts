@@ -8,7 +8,7 @@
 // ─────────────────────────────────────────────────────────────
 
 import { Router, Request, Response } from "express";
-import { recallSimilar } from "../memory/memoryService";
+import { recallSimilar, resetMemory } from "../memory/memoryService";
 import type { InputTrigger } from "../types/memory";
 
 const router = Router();
@@ -46,6 +46,18 @@ router.get("/recall", async (req: Request, res: Response) => {
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ error: "Recall failed", detail: message });
+  }
+});
+
+// ── POST /api/memory/reset ────────────────────────────────────
+
+router.post("/reset", async (req: Request, res: Response) => {
+  try {
+    await resetMemory();
+    res.json({ status: "success", message: "Memory subsystems cleared successfully." });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: "Reset failed", detail: message });
   }
 });
 

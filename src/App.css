@@ -8,52 +8,55 @@
 /* ── Design Tokens ──────────────────────────────────────────── */
 :root {
   /* Surface palette */
-  --bg-primary:   #0a0e17;
+  --bg-primary: #0a0e17;
   --bg-secondary: #111827;
-  --bg-card:      rgba(17, 24, 39, 0.65);
-  --bg-glass:     rgba(255, 255, 255, 0.04);
+  --bg-card: rgba(17, 24, 39, 0.65);
+  --bg-glass: rgba(255, 255, 255, 0.04);
 
   /* Border */
   --border-subtle: rgba(255, 255, 255, 0.06);
-  --border-glow:   rgba(99, 102, 241, 0.35);
+  --border-glow: rgba(99, 102, 241, 0.35);
 
   /* Accent palette */
-  --accent-indigo:  #6366f1;
-  --accent-cyan:    #22d3ee;
+  --accent-indigo: #6366f1;
+  --accent-cyan: #22d3ee;
   --accent-emerald: #34d399;
-  --accent-rose:    #fb7185;
-  --accent-amber:   #fbbf24;
+  --accent-rose: #fb7185;
+  --accent-amber: #fbbf24;
 
   /* Text */
-  --text-primary:   #f1f5f9;
+  --text-primary: #f1f5f9;
   --text-secondary: #94a3b8;
-  --text-muted:     #64748b;
+  --text-muted: #64748b;
 
   /* Typography */
   --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
 
   /* Spacing & Radius */
-  --radius-sm:  8px;
-  --radius-md:  12px;
-  --radius-lg:  16px;
-  --radius-xl:  20px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
 
   /* Shadows */
   --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.4),
-                 0 1px 4px  rgba(0, 0, 0, 0.3);
+    0 1px 4px rgba(0, 0, 0, 0.3);
   --shadow-glow: 0 0 20px rgba(99, 102, 241, 0.15),
-                 0 0 60px rgba(99, 102, 241, 0.05);
+    0 0 60px rgba(99, 102, 241, 0.05);
 }
 
 /* ── Global Reset ───────────────────────────────────────────── */
-*, *::before, *::after {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
 }
 
-html, body {
+html,
+body {
   height: 100%;
   overflow-x: hidden;
 }
@@ -86,12 +89,10 @@ body {
   transform: translateX(-50%);
   width: 800px;
   height: 600px;
-  background: radial-gradient(
-    ellipse at center,
-    rgba(99, 102, 241, 0.12) 0%,
-    rgba(34, 211, 238, 0.06) 40%,
-    transparent 70%
-  );
+  background: radial-gradient(ellipse at center,
+      rgba(99, 102, 241, 0.12) 0%,
+      rgba(34, 211, 238, 0.06) 40%,
+      transparent 70%);
   pointer-events: none;
   z-index: 0;
 }
@@ -129,8 +130,17 @@ body {
 }
 
 @keyframes pulse-dot {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50%      { opacity: 0.4; transform: scale(0.7); }
+
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 0.4;
+    transform: scale(0.7);
+  }
 }
 
 .header__title {
@@ -203,10 +213,21 @@ body {
   flex-shrink: 0;
 }
 
-.card__icon--indigo  { background: rgba(99, 102, 241, 0.15); }
-.card__icon--cyan    { background: rgba(34, 211, 238, 0.15); }
-.card__icon--emerald { background: rgba(52, 211, 153, 0.15); }
-.card__icon--rose    { background: rgba(251, 113, 133, 0.15); }
+.card__icon--indigo {
+  background: rgba(99, 102, 241, 0.15);
+}
+
+.card__icon--cyan {
+  background: rgba(34, 211, 238, 0.15);
+}
+
+.card__icon--emerald {
+  background: rgba(52, 211, 153, 0.15);
+}
+
+.card__icon--rose {
+  background: rgba(251, 113, 133, 0.15);
+}
 
 .card__title {
   font-size: 0.92rem;
@@ -285,9 +306,17 @@ body {
   flex-shrink: 0;
 }
 
-.session-btn__indicator--s1 { background: var(--accent-indigo); }
-.session-btn__indicator--s3 { background: var(--accent-amber); }
-.session-btn__indicator--s5 { background: var(--accent-rose); }
+.session-btn__indicator--s1 {
+  background: var(--accent-indigo);
+}
+
+.session-btn__indicator--s3 {
+  background: var(--accent-amber);
+}
+
+.session-btn__indicator--s5 {
+  background: var(--accent-rose);
+}
 
 .session-btn__label {
   flex: 1;
@@ -324,10 +353,22 @@ body {
   transition: background 0.3s ease;
 }
 
-.status-dot--idle    { background: var(--text-muted); }
-.status-dot--loading { background: var(--accent-amber); animation: pulse-dot 1s ease-in-out infinite; }
-.status-dot--success { background: var(--accent-emerald); }
-.status-dot--error   { background: var(--accent-rose); }
+.status-dot--idle {
+  background: var(--text-muted);
+}
+
+.status-dot--loading {
+  background: var(--accent-amber);
+  animation: pulse-dot 1s ease-in-out infinite;
+}
+
+.status-dot--success {
+  background: var(--accent-emerald);
+}
+
+.status-dot--error {
+  background: var(--accent-rose);
+}
 
 .status-text {
   font-size: 0.8rem;
@@ -374,6 +415,7 @@ body {
     opacity: 0;
     transform: translateY(8px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -494,4 +536,402 @@ body {
   .header__title {
     font-size: 1.6rem;
   }
+
+  .hindsight-controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+/* ================================================================
+   Phase 3 — Hindsight Memory UI Elements
+   ================================================================ */
+
+/* ── Hindsight Controls (Toggle + Reset) ───────────────────── */
+.hindsight-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* ── Toggle Switch ─────────────────────────────────────────── */
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.toggle input {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+}
+
+.toggle__track {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  flex-shrink: 0;
+}
+
+.toggle__thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: var(--text-muted);
+  border-radius: 50%;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.toggle input:checked+.toggle__track {
+  background: rgba(99, 102, 241, 0.25);
+  border-color: rgba(99, 102, 241, 0.5);
+}
+
+.toggle input:checked+.toggle__track .toggle__thumb {
+  left: 20px;
+  background: var(--accent-indigo);
+  box-shadow: 0 0 8px rgba(99, 102, 241, 0.4);
+}
+
+.toggle__label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.01em;
+}
+
+/* ── Reset Button ──────────────────────────────────────────── */
+.reset-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0.5rem 1rem;
+  border: 1px solid rgba(251, 113, 133, 0.25);
+  border-radius: var(--radius-sm);
+  background: rgba(251, 113, 133, 0.08);
+  color: var(--accent-rose);
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.reset-btn:hover:not(:disabled) {
+  background: rgba(251, 113, 133, 0.15);
+  border-color: rgba(251, 113, 133, 0.4);
+  box-shadow: 0 0 12px rgba(251, 113, 133, 0.1);
+}
+
+.reset-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.reset-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.reset-btn__spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(251, 113, 133, 0.25);
+  border-top-color: var(--accent-rose);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── Hindsight Override Badge ──────────────────────────────── */
+.flag--override {
+  background: rgba(251, 191, 36, 0.15);
+  color: var(--accent-amber);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  animation: override-pulse 2s ease-in-out infinite;
+  font-weight: 700;
+}
+
+@keyframes override-pulse {
+
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.2);
+  }
+
+  50% {
+    box-shadow: 0 0 12px 2px rgba(251, 191, 36, 0.15);
+  }
+}
+
+/* ── Confidence Bar ────────────────────────────────────────── */
+.confidence-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0.5rem 0 0.75rem;
+  padding: 0.5rem 0.75rem;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+}
+
+.confidence-bar__label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.confidence-bar__track {
+  flex: 1;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.confidence-bar__fill {
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--accent-indigo), var(--accent-cyan));
+  transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 0 8px rgba(99, 102, 241, 0.3);
+}
+
+.confidence-bar__value {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent-cyan);
+  min-width: 32px;
+  text-align: right;
+}
+
+/* ── Recalled Past Incidents Section ───────────────────────── */
+.recalled-section {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.recalled-section__title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  margin-bottom: 0.5rem;
+  letter-spacing: 0.02em;
+}
+
+.recalled-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.recalled-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0.4rem 0.65rem;
+  background: rgba(34, 211, 238, 0.04);
+  border: 1px solid rgba(34, 211, 238, 0.1);
+  border-radius: 6px;
+  font-size: 0.72rem;
+  transition: border-color 0.2s ease;
+}
+
+.recalled-item:hover {
+  border-color: rgba(34, 211, 238, 0.25);
+}
+
+.recalled-item__id {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  color: var(--text-muted);
+  min-width: 70px;
+}
+
+.recalled-item__type {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--accent-cyan);
+  flex: 1;
+}
+
+.recalled-item__distance {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  padding: 1px 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 4px;
+}
+
+/* ── Active Memory Indicator ───────────────────────────────── */
+.meta-item__value--active {
+  color: var(--accent-emerald);
+  position: relative;
+}
+
+.meta-item__value--active::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-emerald);
+  margin-right: 6px;
+  animation: pulse-dot 2s ease-in-out infinite;
+  vertical-align: middle;
+}
+
+/* ================================================================
+   Phase 4 — CascadeFlow UI Elements
+   ================================================================ */
+
+/* ── Token Meter ─────────────────────────────────────────────── */
+.token-meter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 1rem;
+  padding: 0.6rem 0.85rem;
+  background: var(--bg-glass);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+}
+
+.token-meter__label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.token-meter__track {
+  flex: 1;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.token-meter__fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent-amber);
+  transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 0 8px rgba(251, 191, 36, 0.3);
+}
+
+.token-meter__value {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent-amber);
+  min-width: 48px;
+  text-align: right;
+}
+
+/* ── Model Path Flags ────────────────────────────────────────── */
+.flag--model-fast-path {
+  background: rgba(52, 211, 153, 0.12);
+  color: var(--accent-emerald);
+  border: 1px solid rgba(52, 211, 153, 0.3);
+}
+
+.flag--model-escalation-path {
+  background: rgba(251, 113, 133, 0.12);
+  color: var(--accent-rose);
+  border: 1px solid rgba(251, 113, 133, 0.3);
+}
+
+.flag--model-degraded-fallback {
+  background: rgba(251, 191, 36, 0.12);
+  color: var(--accent-amber);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+}
+
+/* ── CascadeFlow Audit Block ─────────────────────────────────── */
+.cascade-audit {
+  margin-top: 1rem;
+  padding: 1rem;
+  background: var(--bg-glass);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.cascade-audit__title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 0.6rem;
+  letter-spacing: 0.02em;
+}
+
+.cascade-audit__pre {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.03);
+  margin-bottom: 0.6rem;
+  overflow-x: auto;
+  line-height: 1.5;
+}
+
+.cascade-audit__saving {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent-emerald);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ── Active Cascade Indicator ──────────────────────────────── */
+.meta-item__value--cascade {
+  color: var(--accent-cyan);
+  position: relative;
+}
+
+.meta-item__value--cascade::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-cyan);
+  margin-right: 6px;
+  animation: pulse-dot 2s ease-in-out infinite;
+  vertical-align: middle;
 }

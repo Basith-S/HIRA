@@ -106,3 +106,28 @@ export interface BaselineResult {
   used_memory: boolean;
   used_cascade: boolean;
 }
+
+// ─────────────────────────────────────────────────────────────
+// Hindsight Analysis Result (Express backend response)
+// ─────────────────────────────────────────────────────────────
+
+/** A recalled similar incident from ChromaDB. */
+export interface SimilarIncidentInfo {
+  id: string;
+  distance: number;
+  metadata: Record<string, string>;
+}
+
+/** Returned by POST /api/analyze when Hindsight Memory is enabled. */
+export interface HindsightResult {
+  session_id: string;
+  trigger_type: string;
+  recommendation: string;
+  used_memory: boolean;
+  used_cascade: boolean;
+  context: {
+    pastIncidents: SimilarIncidentInfo[];
+    overridden: boolean;
+    confidence: number;
+  };
+}

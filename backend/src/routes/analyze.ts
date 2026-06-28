@@ -1,18 +1,25 @@
 // ─────────────────────────────────────────────────────────────
-// Task 5 — /api/analyze Route
+// Phase 4 — /api/analyze Route with CascadeFlow Routing Engine
 //
-// Mirrors the Phase 1 dumb baseline routing logic.
-// Memory is additive context only — the response logic is unchanged.
+// Pipeline (in order):
+//   PRE:      recallSimilar(trigger) → attach to context
+//   CORE:     hindsight pattern matching / behavioral override
+//   CASCADE:  scoreComplexity → routeToModel → buildAuditTrail
+//   POST:     storeIncident(resolvedArtifact)
+//   RESPONSE: JSON with full cascade fields
 //
-// Pipeline:
-//   PRE:  recallSimilar(trigger) → attach to context
-//   CORE: generate baseline recommendation (dumb routing)
-//   POST: storeIncident(resolvedArtifact)
+// Phase 3 hindsight logic is preserved intact — CascadeFlow
+// wraps its output, it does NOT replace it.
 // ─────────────────────────────────────────────────────────────
 
 import { Router, Request, Response } from "express";
 import { v4 as uuidv4 } from "uuid";
 import { recallSimilar, storeIncident } from "../memory/memoryService";
+import { matchPatterns } from "../memory/patternMatcher";
+import { buildSummaryText } from "../memory/embedder";
+import { scoreComplexity } from "../cascade/complexityScorer";
+import { routeToModel, TOKEN_BUDGET } from "../cascade/modelRouter";
+import { buildAuditTrail } from "../cascade/auditTrail";
 import type { InputTrigger, MemoryArtifact } from "../types/memory";
 
 const router = Router();
@@ -55,18 +62,23 @@ router.post("/", async (req: Request, res: Response) => {
     console.warn("[Hindsight] recall failed (non-fatal):", err);
   }
 
-  // ── CORE: Dumb baseline recommendation (Phase 1 logic) ─────
-  let recommendation: string;
+  // ── CORE: Hindsight pattern matching & Override ───────────
+  let isOverridden = false;
+  let matchConfidence = 0.0;
+  let hindsightRecommendation: string | null = null;
+
+  // Build baseline switch-case recommendation
+  let baselineRecommendation: string;
   switch (trigger_type) {
     case "traffic_spike":
-      recommendation =
+      baselineRecommendation =
         `[BASELINE] Traffic spike detected for session '${session_id}'. ` +
         `Generic recommendation: enable rate-limiting on the affected ` +
         `ingress and monitor for 15 minutes. No CascadeFlow reasoning was applied.`;
       break;
 
     case "failed_logins":
-      recommendation =
+      baselineRecommendation =
         `[BASELINE] Failed login burst detected for session '${session_id}'. ` +
         `Generic recommendation: temporarily lock the targeted accounts, ` +
         `enforce CAPTCHA on the login endpoint, and alert the SOC team. ` +
@@ -74,10 +86,79 @@ router.post("/", async (req: Request, res: Response) => {
       break;
 
     default:
-      recommendation =
+      baselineRecommendation =
         `[BASELINE] Unknown trigger type '${trigger_type}' for session '${session_id}'. ` +
         `Generic recommendation: forward to a human analyst for triage.`;
   }
+
+  const patternResult = matchPatterns(incomingTrigger, pastIncidents);
+  if (patternResult.matched && patternResult.recommendation) {
+    hindsightRecommendation = patternResult.recommendation;
+    isOverridden = true;
+    matchConfidence = patternResult.confidence ?? 0.0;
+    console.log(
+      `[Hindsight] Applied behavioral override for ${session_id} (Confidence: ${matchConfidence})`
+    );
+  }
+
+  // ── CASCADE: Build trigger text for scoring ────────────────
+  // Build the summary text the same way the embedder does,
+  // including source and trigger context in the summary string.
+  const triggerSummary = `source:${source} trigger:${trigger_type} severity:${severity.toFixed(2)}` +
+    (hindsightRecommendation ? ` hindsight:${hindsightRecommendation.substring(0, 120)}` : "");
+  const triggerText = buildSummaryText(trigger_type, severity, triggerSummary);
+
+  // ── CASCADE: Score complexity ──────────────────────────────
+  const complexity = scoreComplexity(
+    triggerText,
+    matchConfidence,
+    severity,
+    pastIncidents.length
+  );
+  console.log(
+    `[CascadeFlow] Complexity: ${complexity.complexityLevel} | ` +
+    `tokens: ${complexity.tokenEstimate} | ` +
+    `keywords: [${complexity.keywordsMatched.join(", ")}] | ` +
+    `composite: ${complexity.compositeAttack}`
+  );
+
+  // ── CASCADE: Route to model ────────────────────────────────
+  const modelResponse = await routeToModel(
+    complexity,
+    hindsightRecommendation,
+    baselineRecommendation,
+    trigger_type,
+    session_id
+  );
+
+  // ── CASCADE: Build audit trail ─────────────────────────────
+  const auditDecisions: string[] = [];
+  if (pastIncidents.length > 0) {
+    auditDecisions.push(`Retrieved ${pastIncidents.length} past incident(s) from memory`);
+  }
+  if (isOverridden) {
+    auditDecisions.push(`Applied hindsight rule (confidence: ${(matchConfidence * 100).toFixed(0)}%)`);
+  }
+  auditDecisions.push(
+    modelResponse.routingDecision.path === "fast_path"
+      ? "Routed to fast model"
+      : modelResponse.routingDecision.path === "escalation_path"
+      ? "Escalated to full model"
+      : "Degraded to rule-based fallback"
+  );
+  if (modelResponse.routingDecision.path === "escalation_path" && isOverridden) {
+    auditDecisions.push("Recommended 2FA enforcement + credential rotation");
+  }
+
+  const auditBlock = buildAuditTrail(
+    complexity,
+    modelResponse.routingDecision,
+    modelResponse.tokensUsed,
+    auditDecisions
+  );
+
+  // The final recommendation comes from the model router
+  const recommendation = modelResponse.recommendation;
 
   // ── POST: Store the resolved artifact ─────────────────────
   const artifact: MemoryArtifact = {
@@ -100,9 +181,16 @@ router.post("/", async (req: Request, res: Response) => {
     trigger_type,
     recommendation,
     used_memory: pastIncidents.length > 0,
-    used_cascade: false,
+    used_cascade: true,        // always true — Phase 4 is active
     context: {
       pastIncidents,
+      overridden: isOverridden,
+      confidence: matchConfidence,
+      // ── Phase 4 CascadeFlow fields ──
+      cascadeAudit: auditBlock,
+      modelPath: modelResponse.routingDecision.path,
+      tokenBudget: TOKEN_BUDGET,
+      tokensUsed: modelResponse.tokensUsed,
     },
   });
 });

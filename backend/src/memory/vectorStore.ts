@@ -128,3 +128,21 @@ export async function querySimilar(
     metadata: (metadatas[i] as Record<string, string>) ?? {},
   }));
 }
+
+/**
+ * Delete and re-create the sentri_incidents collection.
+ */
+export async function resetVectorStore(): Promise<void> {
+  if (!client) {
+    throw new Error("[VectorStore] Cannot reset — client not initialized.");
+  }
+  try {
+    await client.deleteCollection({ name: COLLECTION_NAME });
+    collection = null;
+    await initVectorStore();
+    console.log(`[VectorStore] Collection "${COLLECTION_NAME}" deleted and re-created.`);
+  } catch (err) {
+    console.error("[VectorStore] Reset collection failed:", err);
+    throw err;
+  }
+}

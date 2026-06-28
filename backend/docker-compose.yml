@@ -1,6 +1,6 @@
 services:
   chromadb:
-    image: chromadb/chroma
+    image: chromadb/chroma:latest
     ports:
       - "8000:8000"
     volumes:
@@ -9,3 +9,19 @@ services:
       - IS_PERSISTENT=TRUE
       - ANONYMIZED_TELEMETRY=FALSE
     restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - CHROMA_URL=http://chromadb:8000
+      - VOYAGE_API_KEY=${VOYAGE_API_KEY}
+    depends_on:
+      - chromadb
+    restart: unless-stopped
+    volumes:
+      - ./memory:/app/memory

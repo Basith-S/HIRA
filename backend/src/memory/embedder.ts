@@ -52,9 +52,30 @@ export function buildSummaryText(
 export async function generateEmbedding(text: string): Promise<number[]> {
   const apiKey = process.env.VOYAGE_API_KEY;
   if (!apiKey) {
-    throw new EmbeddingError(
-      "VOYAGE_API_KEY is not set. Add it to backend/.env"
+    console.warn(
+      `[Hindsight] VOYAGE_API_KEY is not set. Generating deterministic mock embedding for: "${text.substring(0, 60)}..."`
     );
+    // Generate a deterministic 1024-dimensional vector
+    const vector = new Array(1024).fill(0);
+    let hash = 0;
+    for (let i = 0; i < text.length; i++) {
+      hash = text.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    for (let i = 0; i < 1024; i++) {
+      hash = (1103515245 * hash + 12345) & 0x7fffffff;
+      vector[i] = (hash / 0x7fffffff) * 2 - 1;
+    }
+    let sumSq = 0;
+    for (let i = 0; i < 1024; i++) {
+      sumSq += vector[i] * vector[i];
+    }
+    const norm = Math.sqrt(sumSq);
+    if (norm > 0) {
+      for (let i = 0; i < 1024; i++) {
+        vector[i] /= norm;
+      }
+    }
+    return vector;
   }
 
   try {

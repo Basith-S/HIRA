@@ -102,3 +102,16 @@ export async function recallSimilar(
 
   return results;
 }
+
+import { resetVectorStore } from "./vectorStore";
+import { resetIncidentsLog } from "./incidentLogger";
+
+/**
+ * Reset all memory subsystems (ChromaDB + JSON log).
+ */
+export async function resetMemory(): Promise<void> {
+  console.log("[MemoryService] Resetting all memory subsystems…");
+  await resetVectorStore();
+  await resetIncidentsLog();
+  console.log("[MemoryService] Memory subsystems reset complete.");
+}
