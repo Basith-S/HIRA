@@ -8,19 +8,35 @@
 /* ── CSS Custom Properties ────────────────────────────────── */
 
 :root {
-  --bg:           #080808;
-  --surface:      #0f0f0f;
-  --border:       #1c1c1c;
-  --border-focus: #2e2e2e;
-  --text-primary: #e8e8e8;
-  --text-muted:   #444444;
-  --text-dim:     #2a2a2a;
-  --accent:       #00e5a0;
-  --crit:         #ff3b3b;
-  --high:         #ff8800;
-  --medium:       #f5c518;
-  --low:          #444444;
-  --success:      #00e5a0;
+  --bg:           #070503;
+  --surface:      #0b0805;
+  --border:       #18120b;
+  --border-focus: #281d11;
+  --text-primary: #8b7965;
+  --text-muted:   #4a3f33;
+  --text-dim:     #251d15;
+  --accent:       #ac9170;
+  --crit:         #b85c4c;
+  --high:         #d48a3b;
+  --medium:       #c2a65d;
+  --low:          #4a3f33;
+  --success:      #8ea87f;
+}
+
+body.light-mode {
+  --bg:           #fbfaf7;
+  --surface:      #f4f0e6;
+  --border:       #dfd7c5;
+  --border-focus: #bfae95;
+  --text-primary: #4a3e30;
+  --text-muted:   #8a7b68;
+  --text-dim:     #bfae95;
+  --accent:       #c49045;
+  --crit:         #b03e3c;
+  --high:         #cc6d31;
+  --medium:       #a88836;
+  --low:          #8a7b68;
+  --success:      #5b7b4a;
 }
 
 /* ── Reduced Motion ───────────────────────────────────────── */

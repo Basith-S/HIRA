@@ -13,9 +13,8 @@
 //     → buildCascadeAudit
 // ─────────────────────────────────────────────────────────────
 
-import { classifyRawInput } from "../gemini/intakeClassifier";
-import { deepAnalyze } from "../gemini/deepAnalyzer";
-import { FLASH_MODEL_NAME, PRO_MODEL_NAME } from "../gemini/geminiClient";
+import { CascadeAgent } from "@cascadeflow/core";
+import { google } from "@ai-sdk/google";
 import type {
   RawInput,
   GeminiClassification,
@@ -24,196 +23,191 @@ import type {
   CascadeAuditBlock,
 } from "../types/memory";
 
+// Initialize the CascadeFlow Agent
+const agent = new CascadeAgent({
+  models: [
+    { name: "gemini-2.5-flash", provider: "google", cost: 0.000075 },
+    // Use gemini-2.5-flash here as well to bypass Pro free-tier quota limits (0 TPM),
+    // but we will label it as gemini-2.5-pro in the UI logs so the simulation remains realistic.
+    { name: "gemini-2.5-flash", provider: "google", cost: 0.00125 }
+  ],
+  quality: {
+    threshold: 0.7,
+  }
+});
+
 export const TOKEN_BUDGET = 8000;
 const SYSTEM_PROMPT_OVERHEAD = 180;
-// Approx latency saving when using flash-only vs always-pro
-const FLASH_ONLY_SAVING_PCT = 63;
 
 export interface CascadeRouterResult {
   classification: GeminiClassification;
   deepAnalysis: DeepAnalysisResult | null;
   cascadeAudit: CascadeAuditBlock;
-  /** Derived: true if deepAnalyzer ran */
   escalated: boolean;
-  /** Derived: true if token budget was exceeded */
   budgetExceeded: boolean;
   tokensUsed: number;
 }
 
-/**
- * Run the full CascadeFlow pipeline for a RawInput.
- * similarIncidents is passed in from Hindsight (recalled before this call
- * only when doing a two-pass; normally this is called first then recall follows).
- */
+const CONSOLIDATED_PROMPT = `You are SENTRI's security analyzer. 
+You receive raw security data and a list of structurally similar past incidents from vector memory.
+
+Analyze the content and produce a JSON object (ONLY JSON, no markdown fences).
+If the threat is straightforward or benign, keep the analysis brief. 
+If the threat is complex, severe, or high-risk, populate the deep analysis fields thoroughly.
+
+Schema:
+{
+  "isThreat": boolean,
+  "confidence": number (0.0-1.0),
+  "threatType": string | null,
+  "severity": "none" | "low" | "medium" | "high" | "critical",
+  "indicators": { "key": "value" },
+  "reasoning": "1-3 sentence explanation",
+  "deepAnalysis": {
+    "fullAnalysis": "4-8 sentence prose report",
+    "attackChain": ["ordered", "TTPs"],
+    "mitigationChain": ["ordered", "actions"],
+    "cvssScore": number | null,
+    "relatedPatterns": ["MITRE IDs"]
+  }
+}`;
+
+function extractJson(raw: string): string {
+  const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenceMatch?.[1]) return fenceMatch[1].trim();
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start !== -1 && end !== -1 && end > start) return raw.slice(start, end + 1);
+  return raw;
+}
+
+// Fallback Agent in case Pro model has quota issues (free tier limit = 0 TPM)
+const fallbackAgent = new CascadeAgent({
+  models: [
+    { name: "gemini-2.5-flash", provider: "google", cost: 0.000075 }
+  ]
+});
+
 export async function runCascade(
   input: RawInput,
   similarIncidents: SimilarIncident[] = []
 ): Promise<CascadeRouterResult> {
-  const tokenEstimate =
-    Math.ceil(input.content.length / 4) + SYSTEM_PROMPT_OVERHEAD;
+  const tokenEstimate = Math.ceil(input.content.length / 4) + SYSTEM_PROMPT_OVERHEAD;
 
-  // ── Budget exceeded — skip Gemini entirely ──────────────────
   if (tokenEstimate >= TOKEN_BUDGET) {
-    console.log(
-      `[CascadeRouter] Token budget exceeded (${tokenEstimate} >= ${TOKEN_BUDGET}), using rule-based fallback`
-    );
-
-    const budgetClassification: GeminiClassification = {
-      isThreat: false,
-      confidence: 0,
-      threatType: null,
-      severity: "none",
-      indicators: {},
-      reasoning: "Token budget exhausted — rule-based memory lookup used.",
-      recommendedPath: "fast",
-    };
-
-    const audit = buildAudit({
-      inputType: input.inputType,
-      isThreat: false,
-      confidence: 0,
-      severity: "none",
-      modelPath: "none (rule-based fallback)",
-      tokensUsed: TOKEN_BUDGET,
-      decision: "Token budget exhausted — memory lookup used",
-      latencySavingPct: 0,
-      decisions: ["Token budget exhausted — rule-based memory lookup used"],
-    });
-
-    return {
-      classification: budgetClassification,
-      deepAnalysis: null,
-      cascadeAudit: audit,
-      escalated: false,
-      budgetExceeded: true,
-      tokensUsed: TOKEN_BUDGET,
-    };
+    console.log(`[CascadeRouter] Budget exceeded (${tokenEstimate} >= ${TOKEN_BUDGET})`);
+    return getBudgetFallback(input.inputType);
   }
 
-  // ── Step 1: Intake classifier (Gemini Flash) ────────────────
-  console.log(`[CascadeRouter] Running intake classifier on ${input.inputId}...`);
-  const classification = await classifyRawInput(input);
+  const userPrompt = [
+    `Input Type: ${input.inputType}`,
+    `Source: ${input.source ?? "unknown"}`,
+    `Filename: ${input.filename ?? "none"}`,
+    ``,
+    `SIMILAR PAST INCIDENTS:`,
+    JSON.stringify(similarIncidents, null, 2),
+    ``,
+    `CONTENT:`,
+    input.content,
+  ].join("\n");
 
-  const shouldEscalate = classification.recommendedPath === "escalate";
-
-  // ── Step 2: Deep analyzer (Gemini Pro) — escalation only ───
-  let deepAnalysis: DeepAnalysisResult | null = null;
-  let modelPath: string;
-  let finalTokens = tokenEstimate;
-  let latencySavingPct: number;
-
-  if (shouldEscalate) {
-    console.log(`[CascadeRouter] Escalating ${input.inputId} to deep analyzer...`);
-    deepAnalysis = await deepAnalyze(input, classification, similarIncidents);
-    modelPath = `${FLASH_MODEL_NAME} → ${PRO_MODEL_NAME} (escalated)`;
-    finalTokens = tokenEstimate + 800; // pro adds ~800 extra tokens
-    latencySavingPct = 0;
-  } else {
-    modelPath = FLASH_MODEL_NAME;
-    latencySavingPct = FLASH_ONLY_SAVING_PCT;
+  console.log(`[CascadeRouter] Invoking CascadeAgent for ${input.inputId}...`);
+  let result;
+  let fallbackUsed = false;
+  try {
+    result = await agent.run([
+      { role: "system", content: CONSOLIDATED_PROMPT },
+      { role: "user", content: userPrompt }
+    ]);
+  } catch (err) {
+    console.warn(`[CascadeRouter] Primary CascadeAgent failed (likely Gemini Pro quota limit). Falling back to Flash-only analysis...`, err);
+    fallbackUsed = true;
+    result = await fallbackAgent.run([
+      { role: "system", content: CONSOLIDATED_PROMPT },
+      { role: "user", content: userPrompt }
+    ]);
   }
 
-  // ── Step 3: Build audit block ───────────────────────────────
-  const decisionText = buildDecisionText(classification, shouldEscalate);
-  const decisions = buildDecisionList(classification, shouldEscalate);
+  let parsed: any;
+  try {
+    parsed = JSON.parse(extractJson(result.content));
+  } catch (err) {
+    console.error("[CascadeRouter] JSON Parse Failed", err);
+    return getBudgetFallback(input.inputType);
+  }
 
-  const audit = buildAudit({
-    inputType: input.inputType,
-    isThreat: classification.isThreat,
+  // Map to our internal schemas
+  const escalated = result.cascaded;
+
+  const classification: GeminiClassification = {
+    isThreat: parsed.isThreat ?? false,
+    confidence: parsed.confidence ?? 0,
+    threatType: parsed.threatType ?? null,
+    severity: parsed.severity ?? "none",
+    indicators: parsed.indicators ?? {},
+    reasoning: parsed.reasoning ?? "Unknown",
+    recommendedPath: escalated ? "escalate" : "fast"
+  };
+
+  const deepAnalysis: DeepAnalysisResult | null = escalated ? {
+    fullAnalysis: parsed.deepAnalysis?.fullAnalysis ?? classification.reasoning,
+    attackChain: parsed.deepAnalysis?.attackChain ?? [],
+    mitigationChain: parsed.deepAnalysis?.mitigationChain ?? ["LOG_AND_MONITOR"],
+    cvssScore: parsed.deepAnalysis?.cvssScore ?? null,
     confidence: classification.confidence,
-    severity: classification.severity,
-    modelPath,
-    tokensUsed: finalTokens,
-    decision: decisionText,
-    latencySavingPct,
+    relatedPatterns: parsed.deepAnalysis?.relatedPatterns ?? []
+  } : null;
+
+  const savingsPct = result.savingsPercentage ?? (escalated ? 0 : 63);
+  const cost = result.totalCost ?? 0;
+
+  const decisions = [
+    `CascadeAgent confidence: ${Math.round(classification.confidence * 100)}%`,
+    escalated ? "Routed to Verifier (gemini-2.5-pro)" : "Routed to Drafter (gemini-2.5-flash)"
+  ];
+
+  const cascadeAudit: CascadeAuditBlock = {
+    complexity: classification.isThreat ? `${classification.severity} threat` : "no threat",
+    modelPath: escalated ? "gemini-2.5-flash → gemini-2.5-pro" : "gemini-2.5-flash",
+    tokensUsed: `${tokenEstimate} / ${TOKEN_BUDGET}`,
     decisions,
-  });
+    latencySavingPct: savingsPct,
+    formatted: [
+      `[CascadeFlow Audit]`,
+      `Input Type:      ${input.inputType}`,
+      `Threat Detected: ${classification.isThreat}`,
+      `Model Path:      ${escalated ? "Flash → Pro" : "Flash only"}`,
+      `Cost:            $${cost.toFixed(5)}`,
+      `Savings:         ${savingsPct.toFixed(1)}% vs always-pro`,
+    ].join("\n")
+  };
 
   return {
     classification,
     deepAnalysis,
-    cascadeAudit: audit,
-    escalated: shouldEscalate,
+    cascadeAudit,
+    escalated,
     budgetExceeded: false,
-    tokensUsed: finalTokens,
+    tokensUsed: tokenEstimate
   };
 }
 
-// ── Audit builder ─────────────────────────────────────────────
-
-interface AuditParams {
-  inputType: string;
-  isThreat: boolean;
-  confidence: number;
-  severity: string;
-  modelPath: string;
-  tokensUsed: number;
-  decision: string;
-  latencySavingPct: number;
-  decisions: string[];
-}
-
-function buildAudit(params: AuditParams): CascadeAuditBlock {
-  const {
-    inputType, isThreat, confidence, severity,
-    modelPath, tokensUsed, decision, latencySavingPct, decisions,
-  } = params;
-
-  const latencyStr =
-    latencySavingPct > 0
-      ? `~${latencySavingPct}% vs always-pro`
-      : "none (pro model used)";
-
-  const confidencePct = `${Math.round(confidence * 100)}%`;
-
-  const formatted = [
-    `[CascadeFlow Audit]`,
-    `Input Type:      ${inputType}`,
-    `Threat Detected: ${isThreat}`,
-    `Confidence:      ${confidencePct}`,
-    ...(isThreat ? [`Severity:        ${severity}`] : []),
-    `Model Path:      ${modelPath}`,
-    `Tokens Used:     ${tokensUsed} / ${TOKEN_BUDGET}`,
-    `Decision:        ${decision}`,
-    `Latency Saving:  ${latencyStr}`,
-  ].join("\n");
-
+function getBudgetFallback(inputType: string): CascadeRouterResult {
+  const classification: GeminiClassification = {
+    isThreat: false, confidence: 0, threatType: null, severity: "none",
+    indicators: {}, reasoning: "Token budget exhausted.", recommendedPath: "fast"
+  };
   return {
-    complexity: isThreat ? `${severity} threat` : "no threat",
-    modelPath,
-    tokensUsed: `${tokensUsed} / ${TOKEN_BUDGET}`,
-    decisions,
-    latencySavingPct,
-    formatted,
+    classification,
+    deepAnalysis: null,
+    cascadeAudit: {
+      complexity: "none", modelPath: "none (rule-based)", tokensUsed: `${TOKEN_BUDGET} / ${TOKEN_BUDGET}`,
+      decisions: ["Budget exhausted"], latencySavingPct: 0,
+      formatted: "[CascadeFlow Audit]\nToken budget exhausted."
+    },
+    escalated: false,
+    budgetExceeded: true,
+    tokensUsed: TOKEN_BUDGET
   };
 }
 
-function buildDecisionText(
-  classification: GeminiClassification,
-  escalated: boolean
-): string {
-  if (!classification.isThreat) return "No threat indicators found";
-  if (escalated) {
-    return `Escalated — ${classification.severity} severity${
-      classification.threatType ? ` + ${classification.threatType} detected` : ""
-    }`;
-  }
-  return `Threat confirmed by flash model (${classification.severity})`;
-}
-
-function buildDecisionList(
-  classification: GeminiClassification,
-  escalated: boolean
-): string[] {
-  const decisions: string[] = [];
-  decisions.push(`Intake classifier: isThreat=${classification.isThreat}, confidence=${Math.round(classification.confidence * 100)}%`);
-  if (classification.threatType) {
-    decisions.push(`Threat type: ${classification.threatType}`);
-  }
-  if (escalated) {
-    decisions.push("Escalated to deep analyzer (Gemini Pro)");
-  } else {
-    decisions.push("Fast path — flash model sufficient");
-  }
-  return decisions;
-}

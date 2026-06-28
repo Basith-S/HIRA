@@ -21,6 +21,11 @@ import { DEMO_SESSIONS } from "./demo/sessionScript";
 import analyzeRouter from "./routes/analyze";
 import memoryRouter from "./routes/memory";
 
+// Map GEMINI_API_KEY for Vercel AI SDK compatibility (used by cascadeflow)
+if (process.env.GEMINI_API_KEY && !process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
+  process.env.GOOGLE_GENERATIVE_AI_API_KEY = process.env.GEMINI_API_KEY;
+}
+
 const app = express();
 const PORT = parseInt(process.env["PORT"] ?? "3001", 10);
 

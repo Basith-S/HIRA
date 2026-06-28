@@ -46,6 +46,18 @@ export function HeaderBar({ connectionStatus }: HeaderBarProps) {
     return () => clearInterval(id);
   }, []);
 
+  const [isLight, setIsLight] = useState(() => document.body.classList.contains("light-mode"));
+
+  const toggleTheme = () => {
+    const nextLight = !isLight;
+    setIsLight(nextLight);
+    if (nextLight) {
+      document.body.classList.add("light-mode");
+    } else {
+      document.body.classList.remove("light-mode");
+    }
+  };
+
   return (
     <header
       style={{
@@ -113,8 +125,26 @@ export function HeaderBar({ connectionStatus }: HeaderBarProps) {
         </span>
       </div>
 
+      {/* Theme Toggle */}
+      <button
+        onClick={toggleTheme}
+        style={{
+          background: "none",
+          border: "none",
+          color: "var(--text-muted)",
+          cursor: "pointer",
+          fontSize: "10px",
+          textTransform: "uppercase",
+          fontFamily: "inherit",
+          padding: 0,
+        }}
+      >
+        [{isLight ? "dark" : "light"}]
+      </button>
+
       {/* Clock */}
       <span style={{ color: "var(--text-muted)", fontSize: "10px" }}>{time}</span>
     </header>
   );
 }
+
