@@ -11,14 +11,11 @@
     "start": "node dist/index.js",
     "type-check": "tsc --noEmit",
     "validate": "ts-node scripts/runValidation.ts",
-    "simulate": "ts-node scripts/cliAgent.ts"
+    "simulate": "ts-node scripts/cliAgent.ts",
+    "setup:models": "bash backend/scripts/setupOllama.sh"
   },
   "dependencies": {
-    "@ai-sdk/google": "^1.2.22",
-    "@cascadeflow/core": "^1.1.0",
-    "@google/generative-ai": "^0.24.1",
     "axios": "^1.7.9",
-    "cascadeflow-monorepo": "github:lemony-ai/cascadeflow",
     "chromadb": "^1.9.2",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",

@@ -1,20 +1,21 @@
 // ─────────────────────────────────────────────────────────────
-// CascadeRouter — New Gemini-powered routing orchestrator
+// CascadeRouter — Ollama Local SLM Routing Orchestrator
 //
-// Replaces the old complexity scorer + model router pipeline.
-// Keeps CascadeAuditBlock shape identical for frontend compatibility.
+// Replaces CascadeFlow/Gemini with local Ollama models:
+//   sentri-classifier (phi3:mini) — fast intake classification
+//   sentri-analyzer   (mistral:7b) — deep forensic analysis
 //
 // Pipeline:
 //   RawInput
 //     → token estimate (ceil(content.length/4) + 180)
 //     → if >= 8000: budget fallback immediately
-//     → intakeClassifier (Gemini Flash)
-//     → if escalate: deepAnalyzer (Gemini Pro)
+//     → intakeClassifier (Ollama sentri-classifier)
+//     → if escalate: deepAnalyzer (Ollama sentri-analyzer)
 //     → buildCascadeAudit
 // ─────────────────────────────────────────────────────────────
 
-import { CascadeAgent } from "@cascadeflow/core";
-import { google } from "@ai-sdk/google";
+import { classifyRawInput } from "../ollama/intakeClassifier";
+import { deepAnalyze } from "../ollama/deepAnalyzer";
 import type {
   RawInput,
   GeminiClassification,
@@ -23,22 +24,11 @@ import type {
   CascadeAuditBlock,
 } from "../types/memory";
 
-const flashModel = process.env.GEMINI_FLASH_MODEL || "gemini-2.5-flash";
-const proModel = process.env.GEMINI_PRO_MODEL || "gemini-2.5-flash";
-
-// Initialize the CascadeFlow Agent
-const agent = new CascadeAgent({
-  models: [
-    { name: flashModel, provider: "google", cost: 0.000075 },
-    { name: proModel, provider: "google", cost: 0.00125 }
-  ],
-  quality: {
-    threshold: 0.7,
-  }
-});
-
 export const TOKEN_BUDGET = 8000;
 const SYSTEM_PROMPT_OVERHEAD = 180;
+
+/** Average mistral:7b inference time on mid-range hardware (ms). */
+const ANALYZER_AVG_MS = 2200;
 
 export interface CascadeRouterResult {
   classification: GeminiClassification;
@@ -49,194 +39,168 @@ export interface CascadeRouterResult {
   tokensUsed: number;
 }
 
-const CONSOLIDATED_PROMPT = `You are SENTRI's security analyzer. 
-You receive raw security data and a list of structurally similar past incidents from vector memory.
-
-Analyze the content and produce a JSON object.
-CRITICAL: Respond ONLY with a valid JSON object. Do not include markdown code fences (like \`\`\`json), do not include any preamble, introduction, or text outside the JSON.
-
-CRITICAL FOR JSON VALIDITY:
-- Never nest double quotes inside double quotes in string fields (e.g. do not write "executed "Bypass" policy"). Instead, use single quotes for nested quotes (e.g., "executed 'Bypass' policy").
-- Strictly ensure all JSON syntax is correct, with appropriate commas and braces.
-
-Schema:
-{
-  "isThreat": boolean,
-  "confidence": number (0.0-1.0),
-  "threatType": string | null,
-  "severity": "none" | "low" | "medium" | "high" | "critical",
-  "indicators": { "key": "value" },
-  "reasoning": "1-3 sentence explanation",
-  "deepAnalysis": {
-    "fullAnalysis": "4-8 sentence prose report",
-    "attackChain": ["ordered", "TTPs"],
-    "mitigationChain": ["ordered", "actions"],
-    "cvssScore": number | null,
-    "relatedPatterns": ["MITRE IDs"]
-  }
-}`;
-
-function extractJson(raw: string): string {
-  const start = raw.indexOf("{");
-  const end = raw.lastIndexOf("}");
-  if (start !== -1 && end !== -1 && end > start) {
-    return raw.slice(start, end + 1);
-  }
-  return raw;
-}
-
-// Fallback Agent in case Pro model has quota issues (free tier limit = 0 TPM)
-const fallbackAgent = new CascadeAgent({
-  models: [
-    { name: "gemini-2.5-flash", provider: "google", cost: 0.000075 }
-  ]
-});
+// ── Main entry point ──────────────────────────────────────────
 
 export async function runCascade(
   input: RawInput,
   similarIncidents: SimilarIncident[] = []
 ): Promise<CascadeRouterResult> {
-  const tokenEstimate = Math.ceil(input.content.length / 4) + SYSTEM_PROMPT_OVERHEAD;
+  const tokenEstimate =
+    Math.ceil(input.content.length / 4) + SYSTEM_PROMPT_OVERHEAD;
 
+  // ── Budget check ──────────────────────────────────────────
   if (tokenEstimate >= TOKEN_BUDGET) {
     console.log(
       `[CascadeRouter] Budget exceeded (${tokenEstimate} >= ${TOKEN_BUDGET}). ` +
-      `Content length: ${input.content?.length}. ` +
-      `Preview: "${input.content?.substring(0, 100)}..."`
+        `Content length: ${input.content?.length}. ` +
+        `Preview: "${input.content?.substring(0, 100)}..."`
     );
     return getBudgetFallback(input.inputType);
   }
 
-  const userPrompt = [
-    `Input Type: ${input.inputType}`,
-    `Source: ${input.source ?? "unknown"}`,
-    `Filename: ${input.filename ?? "none"}`,
-    ``,
-    `SIMILAR PAST INCIDENTS:`,
-    JSON.stringify(similarIncidents, null, 2),
-    ``,
-    `CONTENT:`,
-    input.content,
-  ].join("\n");
+  // ── Step 1: Classify via sentri-classifier (phi3:mini) ────
+  console.log(
+    `[CascadeRouter] Classifying ${input.inputId} via sentri-classifier...`
+  );
+  const classifierStartMs = Date.now();
+  const classification = await classifyRawInput(input);
+  const classifierLatencyMs = Date.now() - classifierStartMs;
 
-  console.log(`[CascadeRouter] Invoking CascadeAgent for ${input.inputId}...`);
-  let result;
-  let fallbackUsed = false;
-  try {
-    result = await agent.run([
-      { role: "system", content: CONSOLIDATED_PROMPT },
-      { role: "user", content: userPrompt }
-    ], { maxTokens: 2048 });
-  } catch (err) {
-    console.warn(`[CascadeRouter] Primary CascadeAgent failed. Falling back to Flash-only analysis...`, err);
-    fallbackUsed = true;
-    result = await fallbackAgent.run([
-      { role: "system", content: CONSOLIDATED_PROMPT },
-      { role: "user", content: userPrompt }
-    ], { maxTokens: 2048 });
+  // ── Step 2: Escalate if needed ────────────────────────────
+  const shouldEscalate =
+    classification.recommendedPath === "escalate" &&
+    classification.isThreat;
+
+  let deepAnalysis: DeepAnalysisResult | null = null;
+  let analyzerLatencyMs = 0;
+  let analyzerTokens = 0;
+
+  if (shouldEscalate) {
+    console.log(
+      `[CascadeRouter] Escalating ${input.inputId} to sentri-analyzer (${classification.threatType}, ${classification.severity})...`
+    );
+    const analyzerStartMs = Date.now();
+    deepAnalysis = await deepAnalyze(input, classification, similarIncidents);
+    analyzerLatencyMs = Date.now() - analyzerStartMs;
   }
 
-  let parsed: any;
-  try {
-    parsed = JSON.parse(extractJson(result.content));
-  } catch (err) {
-    console.error("[CascadeRouter] JSON Parse Failed:", err);
-    console.error("[CascadeRouter] Raw content was:", result.content);
-    return getParseFailureFallback(input.inputType, result.content);
-  }
-
-  // Map to our internal schemas
-  const escalated = result.cascaded;
-
-  const classification: GeminiClassification = {
-    isThreat: parsed.isThreat ?? false,
-    confidence: parsed.confidence ?? 0,
-    threatType: parsed.threatType ?? null,
-    severity: parsed.severity ?? "none",
-    indicators: parsed.indicators ?? {},
-    reasoning: parsed.reasoning ?? "Unknown",
-    recommendedPath: escalated ? "escalate" : "fast"
-  };
-
-  const deepAnalysis: DeepAnalysisResult | null = escalated ? {
-    fullAnalysis: parsed.deepAnalysis?.fullAnalysis ?? classification.reasoning,
-    attackChain: parsed.deepAnalysis?.attackChain ?? [],
-    mitigationChain: parsed.deepAnalysis?.mitigationChain ?? ["LOG_AND_MONITOR"],
-    cvssScore: parsed.deepAnalysis?.cvssScore ?? null,
-    confidence: classification.confidence,
-    relatedPatterns: parsed.deepAnalysis?.relatedPatterns ?? []
-  } : null;
-
-  const savingsPct = result.savingsPercentage ?? (escalated ? 0 : 63);
-  const cost = result.totalCost ?? 0;
-
-  const decisions = [
-    `CascadeAgent confidence: ${Math.round(classification.confidence * 100)}%`,
-    escalated ? "Routed to Verifier (gemini-2.5-pro)" : "Routed to Drafter (gemini-2.5-flash)"
-  ];
-
-  const cascadeAudit: CascadeAuditBlock = {
-    complexity: classification.isThreat ? `${classification.severity} threat` : "no threat",
-    modelPath: escalated ? "gemini-2.5-flash → gemini-2.5-pro" : "gemini-2.5-flash",
-    tokensUsed: `${tokenEstimate} / ${TOKEN_BUDGET}`,
-    decisions,
-    latencySavingPct: savingsPct,
-    formatted: [
-      `[CascadeFlow Audit]`,
-      `Input Type:      ${input.inputType}`,
-      `Threat Detected: ${classification.isThreat}`,
-      `Model Path:      ${escalated ? "Flash → Pro" : "Flash only"}`,
-      `Cost:            $${cost.toFixed(5)}`,
-      `Savings:         ${savingsPct.toFixed(1)}% vs always-pro`,
-    ].join("\n")
-  };
+  // ── Step 3: Build audit trail ─────────────────────────────
+  const totalLatencyMs = classifierLatencyMs + analyzerLatencyMs;
+  const cascadeAudit = buildCascadeAudit(
+    input,
+    classification,
+    shouldEscalate,
+    tokenEstimate,
+    classifierLatencyMs,
+    analyzerLatencyMs,
+    totalLatencyMs
+  );
 
   return {
     classification,
     deepAnalysis,
     cascadeAudit,
-    escalated,
+    escalated: shouldEscalate,
     budgetExceeded: false,
-    tokensUsed: tokenEstimate
+    tokensUsed: tokenEstimate,
   };
 }
+
+// ── Audit trail builder ───────────────────────────────────────
+
+function buildCascadeAudit(
+  input: RawInput,
+  classification: GeminiClassification,
+  escalated: boolean,
+  tokenEstimate: number,
+  classifierLatencyMs: number,
+  analyzerLatencyMs: number,
+  totalLatencyMs: number
+): CascadeAuditBlock {
+  const contextLimit = escalated ? 16384 : 8192;
+  const savingPct =
+    !escalated && totalLatencyMs < ANALYZER_AVG_MS
+      ? Math.round((1 - totalLatencyMs / ANALYZER_AVG_MS) * 100)
+      : 0;
+
+  let decision: string;
+  let modelPath: string;
+  let latencyDetail: string;
+
+  if (!classification.isThreat) {
+    decision = "No threat indicators found";
+    modelPath = "sentri-classifier (phi3:mini)";
+    latencyDetail = `${classifierLatencyMs}ms`;
+  } else if (escalated) {
+    decision = `Escalated — ${classification.severity} + ${classification.threatType}`;
+    modelPath =
+      "sentri-classifier → sentri-analyzer (phi3:mini → mistral:7b)";
+    latencyDetail = `${classifierLatencyMs}ms classifier + ${analyzerLatencyMs}ms analyzer`;
+  } else {
+    decision = "Threat confirmed — fast path sufficient";
+    modelPath = "sentri-classifier (phi3:mini)";
+    latencyDetail = `${classifierLatencyMs}ms`;
+  }
+
+  const savingsStr =
+    savingPct > 0 ? `~${savingPct}% faster` : "none (deep analysis required)";
+
+  const decisions = [
+    `Confidence: ${Math.round(classification.confidence * 100)}%`,
+    decision,
+  ];
+
+  const formatted = [
+    `[CascadeFlow Audit]`,
+    `- Input Type:      ${input.inputType}`,
+    `- Threat Detected: ${classification.isThreat}`,
+    `- Confidence:      ${Math.round(classification.confidence * 100)}%`,
+    `- Severity:        ${classification.severity}`,
+    `- Model Path:      ${modelPath}`,
+    `- Tokens Used:     ${tokenEstimate} / ${contextLimit}`,
+    `- Inference Time:  ${latencyDetail}`,
+    `- Decision:        ${decision}`,
+    `- vs Always-Deep:  ${savingsStr}`,
+  ].join("\n");
+
+  return {
+    complexity: classification.isThreat
+      ? `${classification.severity} threat`
+      : "no threat",
+    modelPath,
+    tokensUsed: `${tokenEstimate} / ${contextLimit}`,
+    decisions,
+    latencySavingPct: savingPct,
+    formatted,
+  };
+}
+
+// ── Budget fallback ───────────────────────────────────────────
 
 function getBudgetFallback(inputType: string): CascadeRouterResult {
   const classification: GeminiClassification = {
-    isThreat: false, confidence: 0, threatType: null, severity: "none",
-    indicators: {}, reasoning: "Token budget exhausted.", recommendedPath: "fast"
+    isThreat: false,
+    confidence: 0,
+    threatType: null,
+    severity: "none",
+    indicators: {},
+    reasoning: "Token budget exhausted.",
+    recommendedPath: "fast",
   };
+
   return {
     classification,
     deepAnalysis: null,
     cascadeAudit: {
-      complexity: "none", modelPath: "none (rule-based)", tokensUsed: `${TOKEN_BUDGET} / ${TOKEN_BUDGET}`,
-      decisions: ["Budget exhausted"], latencySavingPct: 0,
-      formatted: "[CascadeFlow Audit]\nToken budget exhausted."
+      complexity: "none",
+      modelPath: "none (rule-based)",
+      tokensUsed: `${TOKEN_BUDGET} / ${TOKEN_BUDGET}`,
+      decisions: ["Budget exhausted"],
+      latencySavingPct: 0,
+      formatted: "[CascadeFlow Audit]\nToken budget exhausted.",
     },
     escalated: false,
     budgetExceeded: true,
-    tokensUsed: TOKEN_BUDGET
+    tokensUsed: TOKEN_BUDGET,
   };
 }
-
-function getParseFailureFallback(inputType: string, rawContent: string): CascadeRouterResult {
-  const classification: GeminiClassification = {
-    isThreat: false, confidence: 0.5, threatType: null, severity: "none",
-    indicators: {}, reasoning: `Failed to parse analysis JSON. Raw response: \n${rawContent.substring(0, 2000)}`, recommendedPath: "fast"
-  };
-  return {
-    classification,
-    deepAnalysis: null,
-    cascadeAudit: {
-      complexity: "none", modelPath: "gemini-2.5-flash (parsing fallback)", tokensUsed: `0 / ${TOKEN_BUDGET}`,
-      decisions: ["JSON parsing failed"], latencySavingPct: 0,
-      formatted: `[CascadeFlow Audit]\nJSON parsing failed. Raw response: \n${rawContent.substring(0, 2000)}`
-    },
-    escalated: false,
-    budgetExceeded: false,
-    tokensUsed: 0
-  };
-}
-
-

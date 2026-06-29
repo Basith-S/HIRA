@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────
-// POST /api/analyze — SENTRI Pipeline (Phase 6: Gemini + RawInput)
+// POST /api/analyze — SENTRI Pipeline (Phase 7: Ollama Local SLM)
 //
 // New request body:
 //   { inputType, content, source?, filename? }
@@ -7,7 +7,7 @@
 // Pipeline:
 //   1. Build RawInput
 //   2. Token estimate — if >= 8000: budget fallback
-//   3. runCascade (Flash intake → optional Pro deep analysis)
+//   3. runCascade (sentri-classifier → optional sentri-analyzer)
 //   4. Build internal InputTrigger for Hindsight
 //   5. recallSimilar (ChromaDB)
 //   6. matchPatterns
@@ -15,7 +15,7 @@
 //   8. dispatchNotification? + storeIncident
 //   9. Return response (content truncated to 500 chars)
 //
-// ?mode=baseline: returns mock classification, skips Gemini
+// ?mode=baseline: returns mock classification, skips analysis
 // ─────────────────────────────────────────────────────────────
 
 import { Router, Request, Response } from "express";
@@ -121,7 +121,7 @@ router.post("/", async (req: Request, res: Response) => {
     source: resolvedSource,
   };
 
-  // ── Baseline mode — skip Gemini ───────────────────────────────
+  // ── Baseline mode — skip analysis ──────────────────────────────
   if (req.query["mode"] === "baseline") {
     const mockClassification: GeminiClassification = {
       isThreat: true,
@@ -129,7 +129,7 @@ router.post("/", async (req: Request, res: Response) => {
       threatType: trigger_type ?? resolvedInputType,
       severity: "medium",
       indicators: {},
-      reasoning: "Baseline mode — Gemini classification skipped.",
+      reasoning: "Baseline mode — classification skipped.",
       recommendedPath: "fast",
     };
 
@@ -253,8 +253,8 @@ router.post("/", async (req: Request, res: Response) => {
           confidence: classification.confidence,
           cascadeAudit,
           modelPath: cascadeResult.escalated
-            ? `${process.env["GEMINI_FLASH_MODEL"]} → ${process.env["GEMINI_PRO_MODEL"]}`
-            : process.env["GEMINI_FLASH_MODEL"],
+            ? "sentri-classifier → sentri-analyzer (phi3:mini → mistral:7b)"
+            : "sentri-classifier (phi3:mini)",
           tokenBudget: TOKEN_BUDGET,
           tokensUsed: cascadeResult.tokensUsed,
         },
@@ -312,8 +312,8 @@ router.post("/", async (req: Request, res: Response) => {
       confidence: matchConfidence,
       cascadeAudit,
       modelPath: cascadeResult.escalated
-        ? `${process.env["GEMINI_FLASH_MODEL"]} → ${process.env["GEMINI_PRO_MODEL"]}`
-        : process.env["GEMINI_FLASH_MODEL"],
+        ? "sentri-classifier → sentri-analyzer (phi3:mini → mistral:7b)"
+        : "sentri-classifier (phi3:mini)",
       tokenBudget: TOKEN_BUDGET,
       tokensUsed: cascadeResult.tokensUsed,
     },

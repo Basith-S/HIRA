@@ -4,10 +4,10 @@ SENTRI is an advanced, proof-of-concept incident analysis system. It compares a 
 
 The platform includes:
 - **Tauri + React + Vite Frontend**: An interactive dashboard styled with a high-fidelity retro CRT theme (supporting Light/Dark modes) to manage and review security logs and analyze execution traces.
-- **Express + TypeScript Backend**: The central orchestrator handling security logs, pipeline routing, and LLM integrations.
+- **Express + TypeScript Backend**: The central orchestrator handling security logs, pipeline routing, and local SLM integrations.
 - **ChromaDB**: A high-performance vector database used to store persistent incident memory.
 - **Voyage AI**: Powerful text embeddings mapped into ChromaDB with built-in retry-backoff resiliency.
-- **Google Gemini (via @cascadeflow/core)**: Powers the intake classifier (using `gemini-1.5-flash`) and the deep analyzer to categorize incidents, assess threat posture, and suggest mitigations.
+- **Ollama (Local SLM)**: Two-tier local model stack — `sentri-classifier` (phi3:mini) for fast intake classification and `sentri-analyzer` (mistral:7b) for deep forensic analysis. No data leaves your machine.
 
 ---
 
@@ -15,8 +15,9 @@ The platform includes:
 
 Before running the application, make sure you have the following installed on your system:
 
-- **Node.js** (v20 or higher recommended)
+- **Node.js** (v18 or higher)
 - **Docker & Docker Compose** (for spinning up ChromaDB)
+- **Ollama** — https://ollama.ai/download
 - **Rust Toolchain & Cargo** (Required *only* if you want to run the native desktop version via Tauri. If running in the web browser, this is optional.)
   - Install Rust via [rustup.rs](https://rustup.rs/)
 
@@ -39,11 +40,9 @@ You must configure the backend environment variables before starting the servers
 | Variable | Description | Required / Default |
 | :--- | :--- | :--- |
 | `VOYAGE_API_KEY` | Your Voyage AI API key for embeddings. [Get a key](https://dash.voyageai.com/) | **Required** |
-| `GEMINI_API_KEY` | Your Google Gemini API key. [Get a key](https://aistudio.google.com/app/apikey) | **Required** |
+| `OLLAMA_URL` | Ollama REST API endpoint. | `http://localhost:11434` |
 | `CHROMA_URL` | The endpoint URL of the ChromaDB instance. | `http://localhost:8000` |
 | `PORT` | Express server port. | `3001` |
-| `GEMINI_FLASH_MODEL` | Gemini model for quick classification. | `gemini-1.5-flash` |
-| `GEMINI_PRO_MODEL` | Gemini model for deep threat analysis. | `gemini-1.5-flash` |
 
 ---
 
@@ -62,7 +61,12 @@ cd backend
 docker compose up chromadb -d
 ```
 
-#### Step 2: Start the Backend Server
+#### Step 2: Install Ollama Models (~8GB download, one time)
+```bash
+npm run setup:models
+```
+
+#### Step 3: Start the Backend Server
 In the `backend/` directory, install dependencies and run the server:
 ```bash
 npm install
@@ -70,7 +74,7 @@ npm run dev
 ```
 The server will start on `http://localhost:3001` (or your custom `PORT` in `.env`).
 
-#### Step 3: Run the Frontend App
+#### Step 4: Run the Frontend App
 Open a new terminal window in the project's root folder:
 ```bash
 npm install
@@ -103,6 +107,19 @@ This spins up both ChromaDB and the backend Express application within Docker co
 
 ---
 
+## 🧠 Model Info
+
+| Model | Base | Size | Use Case |
+| :--- | :--- | :--- | :--- |
+| `sentri-classifier` | phi3:mini (3.8B) | ~2.3GB | Intake classification, isThreat determination, fast mitigations |
+| `sentri-analyzer` | mistral:7b (7B) | ~4.1GB | Deep forensic analysis, attack chain reconstruction, CVSS estimation |
+
+Both models run locally via Ollama. **No data leaves your machine.** No API key needed for inference.
+
+> **Note on CPU-only inference**: If the analyst's machine has no GPU, `sentri-analyzer` (mistral:7b) inference takes approximately 2–5 seconds per response. This is acceptable for deep analysis (only fires on critical escalations) but worth knowing upfront.
+
+---
+
 ## 📊 Running Validation & CLI Tools
 
 SENTRI features CLI scripts inside the `backend/` directory to quickly validate system behavior or simulate new security incidents.
@@ -127,5 +144,6 @@ npm run simulate
 ## 🧠 Core System Design & Resiliency
 
 - **Voyage AI Rate-Limit Mitigation**: Voyage's free-tier rate limit (3 Requests Per Minute) is programmatically bypassed using an exponential-backoff retry decorator in the embedding service, guaranteeing that multi-step incident chains complete successfully without dropping requests.
-- **CascadeFlow Routing**: Utilizing `@cascadeflow/core`, incident analysis is dynamically routed, validating JSON output schemas and falling back gracefully if downstream LLMs fail to parse correctly.
+- **CascadeFlow Routing**: Incident analysis is dynamically routed through a two-tier local SLM pipeline. The fast path (phi3:mini) handles classification, while critical threats are escalated to the deep path (mistral:7b) for full forensic analysis. JSON output schemas are validated with graceful fallbacks.
 - **Hindsight Memory**: Past threats and their resolutions are indexed inside ChromaDB. Subsequent alerts automatically query historical incidents to build context, optimize threat classification, and prevent security double-jeopardy or repetitive alerts.
+- **Fully Air-Gapped Capable**: All inference runs locally via Ollama — no external API calls, no token costs, works completely offline. Critical for incident response in isolated environments.

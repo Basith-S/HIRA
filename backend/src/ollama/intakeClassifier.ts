@@ -1,42 +1,20 @@
 // ─────────────────────────────────────────────────────────────
-// Intake Classifier — Gemini Flash
+// Intake Classifier — Ollama (sentri-classifier / phi3:mini)
 //
-// First Gemini call in the pipeline. Takes raw unstructured input
-// and returns a GeminiClassification with threat type, severity,
-// IOCs, reasoning, and routing recommendation.
+// Replaces gemini/intakeClassifier.ts. Same public API:
+//   classifyRawInput(input) → GeminiClassification
 //
-// Retry logic: one retry on JSON parse failure, then safe fallback.
-// Confidence floor: if isThreat=true but confidence < 0.4, override
-//   to isThreat=false (prevents over-flagging clean inputs).
+// Pipeline:
+//   1. Build few-shot prompt via promptBuilder
+//   2. Call runClassifier (Ollama)
+//   3. Parse JSON, validate fields
+//   4. On parse fail: retry once with JSON-only instruction
+//   5. On total fail: safe fallback (isThreat: false)
 // ─────────────────────────────────────────────────────────────
 
-import { generateFlash, GeminiError, FLASH_MODEL_NAME } from "./geminiClient";
+import { runClassifier, OllamaTimeoutError, OllamaUnavailableError } from "./ollamaClient";
+import { buildClassifierPrompt } from "./promptBuilder";
 import type { RawInput, GeminiClassification } from "../types/memory";
-
-// ── System prompt (exact per spec) ───────────────────────────
-
-const SYSTEM_PROMPT = `You are SENTRI's intake classifier. You receive raw security data — code, logs, file contents, network captures, process lists, registry entries, emails, or hashes.
-Your job is to analyze the content and determine:
-- Whether it represents a security threat
-- If so, what type of threat and how severe
-- What specific indicators of compromise (IOCs) are present
-- Whether this requires deep analysis (escalate) or can be handled quickly (fast)
-
-Respond ONLY with a JSON object. No preamble, no markdown, no explanation outside the JSON. Schema:
-{
-  "isThreat": boolean,
-  "confidence": number (0.0–1.0),
-  "threatType": string | null,
-  "severity": "none" | "low" | "medium" | "high" | "critical",
-  "indicators": { key: value pairs of extracted IOCs },
-  "reasoning": "1–3 sentence explanation of your assessment",
-  "recommendedPath": "fast" | "escalate"
-}
-
-recommendedPath rules:
-- "escalate" if: confidence > 0.7 AND severity is "high" or "critical"
-- "escalate" if: threatType involves lateral movement, exfiltration, ransomware, privilege escalation, supply chain, or zero-day
-- "fast" for everything else including isThreat: false`;
 
 // ── Safe fallback ─────────────────────────────────────────────
 
@@ -50,8 +28,12 @@ const SAFE_FALLBACK: GeminiClassification = {
   recommendedPath: "fast",
 };
 
+// ── Valid severity values ─────────────────────────────────────
+
+const VALID_SEVERITIES = new Set(["none", "low", "medium", "high", "critical"]);
+
 // ── JSON extraction helper ────────────────────────────────────
-// Handles cases where Gemini wraps response in markdown fences.
+// Handles cases where the SLM wraps response in markdown fences.
 
 function extractJson(raw: string): string {
   // Strip markdown code fences if present
@@ -68,10 +50,16 @@ function extractJson(raw: string): string {
 
 function parseClassification(raw: string): GeminiClassification {
   const parsed = JSON.parse(extractJson(raw));
+
   // Validate required fields
-  if (typeof parsed["isThreat"] !== "boolean") throw new Error("isThreat missing");
-  if (typeof parsed["confidence"] !== "number") throw new Error("confidence missing");
+  if (typeof parsed["isThreat"] !== "boolean") throw new Error("isThreat missing or not boolean");
+  if (typeof parsed["confidence"] !== "number") throw new Error("confidence missing or not number");
+  if (parsed["confidence"] < 0 || parsed["confidence"] > 1) throw new Error("confidence out of range");
   if (typeof parsed["reasoning"] !== "string") throw new Error("reasoning missing");
+  if (parsed["severity"] && !VALID_SEVERITIES.has(parsed["severity"])) {
+    throw new Error(`Invalid severity: ${parsed["severity"]}`);
+  }
+
   return {
     isThreat: parsed["isThreat"],
     confidence: parsed["confidence"],
@@ -88,21 +76,18 @@ function parseClassification(raw: string): GeminiClassification {
 export async function classifyRawInput(
   input: RawInput
 ): Promise<GeminiClassification> {
-  const userPrompt = [
-    `Input Type: ${input.inputType}`,
-    `Source: ${input.source ?? "unknown"}`,
-    `Filename: ${input.filename ?? "none"}`,
-    ``,
-    `CONTENT:`,
-    input.content,
-  ].join("\n");
+  const prompt = buildClassifierPrompt(input);
 
+  // First attempt
   let rawResponse: string;
   try {
-    rawResponse = await generateFlash(userPrompt, SYSTEM_PROMPT);
+    const result = await runClassifier(prompt);
+    rawResponse = result.text;
   } catch (err: unknown) {
-    if (err instanceof GeminiError) {
-      console.warn(`[IntakeClassifier] ${FLASH_MODEL_NAME} failed:`, err.message);
+    if (err instanceof OllamaTimeoutError) {
+      console.warn(`[IntakeClassifier] sentri-classifier timed out`);
+    } else if (err instanceof OllamaUnavailableError) {
+      console.warn(`[IntakeClassifier] Ollama unavailable: ${(err as Error).message}`);
     } else {
       console.warn("[IntakeClassifier] Unexpected error:", err);
     }
@@ -117,10 +102,11 @@ export async function classifyRawInput(
     console.warn("[IntakeClassifier] JSON parse failed on first attempt, retrying...");
   }
 
-  // Retry: re-call Gemini once
+  // Retry: re-call with explicit JSON instruction
   try {
-    const retryResponse = await generateFlash(userPrompt, SYSTEM_PROMPT);
-    const result = parseClassification(retryResponse);
+    const retryPrompt = prompt + "\nYou must respond with ONLY a JSON object. No other text.";
+    const retryResult = await runClassifier(retryPrompt);
+    const result = parseClassification(retryResult.text);
     return applyConfidenceFloor(result);
   } catch (retryErr) {
     console.warn("[IntakeClassifier] Retry failed, returning safe fallback.");
@@ -131,7 +117,6 @@ export async function classifyRawInput(
 /**
  * Confidence floor: prevent over-flagging.
  * If isThreat=true but confidence < 0.4, override to isThreat=false.
- * This protects Session 2 (clean nginx config) from false positives.
  */
 function applyConfidenceFloor(result: GeminiClassification): GeminiClassification {
   if (result.isThreat && result.confidence < 0.4) {
