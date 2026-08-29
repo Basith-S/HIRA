@@ -1,153 +1,205 @@
-# SENTRI / HIRA (Incident Analysis & Response System)
+# SENTRI / HIRA — Incident Analysis & Response System
 
-SENTRI is an advanced, proof-of-concept incident analysis system. It compares a naive baseline incident-response process against a memory-informed security analyst pipeline utilizing a Hindsight vector memory database and CascadeFlow intelligence routing.
+SENTRI is a proof-of-concept security incident analysis system. You paste raw, unstructured
+input — log lines, a source file, a packet summary, an email — and it decides whether that
+input represents a threat, what kind, how severe, and what to do about it. It then remembers
+the incident so later inputs can be judged against what it has already seen.
 
-The platform includes:
-- **Tauri + React + Vite Frontend**: An interactive dashboard styled with a high-fidelity retro CRT theme (supporting Light/Dark modes) to manage and review security logs and analyze execution traces.
-- **Express + TypeScript Backend**: The central orchestrator handling security logs, pipeline routing, and local SLM integrations.
-- **ChromaDB**: A high-performance vector database used to store persistent incident memory.
-- **Voyage AI**: Powerful text embeddings mapped into ChromaDB with built-in retry-backoff resiliency.
-- **Ollama (Local SLM)**: Two-tier local model stack — `sentri-classifier` (phi3:mini) for fast intake classification and `sentri-analyzer` (mistral:7b) for deep forensic analysis. No data leaves your machine.
+Its purpose is comparative: it runs a naive baseline analyst pipeline alongside a
+memory-informed pipeline, so you can see what vector memory and conditional model routing
+actually buy you.
 
 ---
 
-## 🛠️ Prerequisites
+## What it does
 
-Before running the application, make sure you have the following installed on your system:
+A submission to `POST /api/analyze` flows through this pipeline:
 
-- **Node.js** (v18 or higher)
-- **Docker & Docker Compose** (for spinning up ChromaDB)
+1. **Recall** — the input is embedded and used to query past incidents from the vector store,
+   so prior context is available before any classification happens.
+2. **Intake classification** — a small local model (`sentri-classifier`) decides `isThreat`,
+   a threat type, a severity, and whether the case warrants escalation. Clean or low-risk
+   inputs stop here on the fast path.
+3. **Deep forensic analysis** — only if the classifier escalates, a larger local model
+   (`sentri-analyzer`) reconstructs the attack chain, estimates a CVSS score, and produces a
+   full mitigation plan.
+4. **Pattern matching** — the classification is compared against recalled incidents. A
+   cross-session composite pattern can override the single-shot verdict.
+5. **Decision + persistence** — a structured `AgentDecision` is returned with an audit trail,
+   and the incident is written back to memory for future recall.
+
+The response carries the classification, the decision, the similar incidents that informed
+it, and a CascadeFlow audit block showing which model path was taken and why.
+
+---
+
+## What it uses
+
+| Component | Role | Required? |
+| :--- | :--- | :--- |
+| **Node.js 18+** | Runtime for both backend and frontend | **Required** |
+| **Ollama** | Runs both local models. No API key, no data leaves the machine | **Required** |
+| **Express + TypeScript** | Backend orchestrator, `backend/` | **Required** |
+| **React + Vite** | Frontend dashboard, retro CRT theme with light/dark modes | **Required** |
+| **Voyage AI** | Cloud embedding API (`voyage-3`) for vector search | **Required for memory** |
+| **ChromaDB** (via Docker) | Persistent vector store for incident memory | Optional — degrades |
+| **Rust toolchain** | Only to build the native Tauri desktop app | Optional |
+
+### Local models
+
+| Model | Base | Size | Role |
+| :--- | :--- | :--- | :--- |
+| `sentri-classifier` | phi3:mini (3.8B) | ~2.3 GB | Intake classification, threat/severity call, fast mitigations |
+| `sentri-analyzer` | mistral:7b (7B) | ~4.1 GB | Deep forensic analysis, attack chain, CVSS estimation |
+
+Both are built from Modelfiles in `backend/ollama/` and run entirely locally.
+
+### What happens when a dependency is missing
+
+The backend is written to start and keep serving even when its dependencies are not all up:
+
+- **Ollama down or models not built** — the server still starts and logs a warning.
+  `/api/health` reports `degraded` with the missing models named. Analysis will not produce
+  useful classifications until Ollama is running.
+- **ChromaDB down** — recall and persistence fail non-fatally and the system falls back to a
+  small in-process memory of recent incidents. It retries the connection lazily (at most once
+  every 15 s), so starting Chroma later is picked up without restarting the backend.
+- **Voyage rate-limited or unreachable** — embeddings fail after a retry-with-backoff
+  sequence. Persistence is best-effort and does not block the response; recall does block,
+  since its results feed the classifier. See *Known limitations* below.
+
+---
+
+## Prerequisites
+
+- **Node.js** v18 or higher
 - **Ollama** — https://ollama.ai/download
-- **CascadeFlow Routing Agent** — Built-in orchestrator that implements a two-tier model cascade (`sentri-classifier` and `sentri-analyzer`) to balance speed and intelligence.
-- **Rust Toolchain & Cargo** (Required *only* if you want to run the native desktop version via Tauri. If running in the web browser, this is optional.)
-  - Install Rust via [rustup.rs](https://rustup.rs/)
+- **Docker & Docker Compose** — only needed for ChromaDB
+- **A Voyage AI API key** — https://dash.voyageai.com/
+- **Rust toolchain** — only for the native desktop build, via [rustup.rs](https://rustup.rs/)
 
 ---
 
-## ⚙️ Environment Configuration
+## Environment configuration
 
-You must configure the backend environment variables before starting the servers. 
+From the `backend/` directory, copy the example file and fill it in:
 
-1. Navigate to the backend directory:
-   ```bash
-   cd backend
-   ```
-2. Create a `.env` file (you can copy the example configuration):
-   ```bash
-   cp .env.example .env
-   ```
-3. Open `.env` and fill in your API keys:
+```bash
+cp .env.example .env
+```
 
 | Variable | Description | Required / Default |
 | :--- | :--- | :--- |
-| `VOYAGE_API_KEY` | Your Voyage AI API key for embeddings. [Get a key](https://dash.voyageai.com/) | **Required** |
-| `OLLAMA_URL` | Ollama REST API endpoint. | `http://localhost:11434` |
-| `CHROMA_URL` | The endpoint URL of the ChromaDB instance. | `http://localhost:8000` |
-| `PORT` | Express server port. | `3001` |
+| `VOYAGE_API_KEY` | Voyage AI key for embeddings | **Required** |
+| `OLLAMA_URL` | Ollama REST endpoint | `http://localhost:11434` |
+| `CHROMA_URL` | ChromaDB endpoint | `http://localhost:8000` |
+| `PORT` | Express server port | `3001` |
+| `OLLAMA_TIMEOUT_MS` | Per-request timeout for a model call. Must cover cold model loads, not just generation | `120000` |
+| `OLLAMA_KEEP_ALIVE` | How long Ollama holds a model resident after use. Longer keeps requests fast; costs RAM | `30m` |
 
 ---
 
-## 🚀 Running the Project
+## Running the project
 
-You can run the project in two main ways: **Local Development** (recommended for coding/debugging) or **Full Docker Compose** mode.
+### Option A: local development (recommended)
 
-### Option A: Local Development Mode (Recommended)
+**1. Start ChromaDB** from `backend/`:
 
-This mode allows hot-reloading for both the backend and frontend codebases.
-
-#### Step 1: Start ChromaDB
-Spin up the local persistent ChromaDB container from the `backend/` directory:
 ```bash
-cd backend
 docker compose up chromadb -d
 ```
 
-#### Step 2: Install Ollama Models (~8GB download, one time)
+> Start only `chromadb`. The compose file also defines a `backend` service bound to port
+> 3001, which will collide with the dev server you are about to run.
+
+**2. Build the Ollama models** (~8 GB download, one time). Run this from the **repository
+root** — the script resolves paths relative to the root:
+
 ```bash
 npm run setup:models
 ```
 
-#### Step 3: Start the Backend Server
-In the `backend/` directory, install dependencies and run the server:
+**3. Start the backend** from `backend/`:
+
 ```bash
 npm install
 npm run dev
 ```
-The server will start on `http://localhost:3001` (or your custom `PORT` in `.env`).
 
-#### Step 4: Run the Frontend App
-Open a new terminal window in the project's root folder:
+Serves on `http://localhost:3001` (or your `PORT`).
+
+**4. Start the frontend** from the repository root, in a new terminal:
+
 ```bash
 npm install
-# To run in the web browser (recommended & fast):
 npm run dev
-# OR, to compile and run as a native desktop application (requires Rust):
-npm run tauri dev
 ```
-By default, the Vite web server will be accessible at [http://localhost:1420](http://localhost:1420).
 
----
+Available at [http://localhost:1420](http://localhost:1420). For the native desktop build
+instead (requires Rust): `npm run tauri dev`.
 
-### Option B: Full Docker Compose Mode
+### Option B: full Docker Compose
 
-This spins up both ChromaDB and the backend Express application within Docker containers.
+Spins up ChromaDB and the backend together. From `backend/`:
 
-1. Navigate to the `backend/` directory:
-   ```bash
-   cd backend
-   ```
-2. Build and launch all services:
-   ```bash
-   docker compose up --build -d
-   ```
-3. Run the frontend from the project root:
-   ```bash
-   npm install
-   npm run dev
-   ```
-
----
-
-## 🧠 Model Info
-
-| Model | Base | Size | Use Case |
-| :--- | :--- | :--- | :--- |
-| `sentri-classifier` | phi3:mini (3.8B) | ~2.3GB | Intake classification, isThreat determination, fast mitigations |
-| `sentri-analyzer` | mistral:7b (7B) | ~4.1GB | Deep forensic analysis, attack chain reconstruction, CVSS estimation |
-
-Both models run locally via Ollama. **No data leaves your machine.** No API key needed for inference.
-
-> **Note on CPU-only inference**: If the analyst's machine has no GPU, `sentri-analyzer` (mistral:7b) inference takes approximately 2–5 seconds per response. This is acceptable for deep analysis (only fires on critical escalations) but worth knowing upfront.
-
----
-
-## 📊 Running Validation & CLI Tools
-
-SENTRI features CLI scripts inside the `backend/` directory to quickly validate system behavior or simulate new security incidents.
-
-### Run Validation Suite
-Compare a naive baseline analyst pipeline against the full SENTRI pipeline (incorporating memory, CascadeFlow, and hindsight):
 ```bash
-cd backend
+docker compose up --build -d
+```
+
+Then run the frontend from the repository root with `npm install && npm run dev`.
+
+---
+
+## CLI tools
+
+Both run from `backend/`.
+
+**Validation suite** — runs pre-configured incident traces through both the baseline and the
+full pipeline and prints a comparison:
+
+```bash
 npm run validate
 ```
-This script will execute the pre-configured incident traces and print a detailed comparison report directly in your terminal.
 
-### Interactive CLI Simulator
-Generate new incident alerts and watch the Cascade agent evaluate threat severity and mitigation strategies:
+**Interactive simulator** — generate incidents and watch the cascade evaluate them:
+
 ```bash
-cd backend
 npm run simulate
 ```
 
 ---
 
-## 🧠 Core System Design & Resiliency
+## System design
 
-- **Voyage AI Rate-Limit Mitigation**: Voyage's free-tier rate limit (3 Requests Per Minute) is programmatically bypassed using an exponential-backoff retry decorator in the embedding service, guaranteeing that multi-step incident chains complete successfully without dropping requests.
-- **CascadeFlow Routing Agent**: Incident analysis is dynamically orchestrated using a custom local CascadeFlow Agent implementation. The agent processes inputs in two stages:
-  1. **Intake Classification (phi3:mini)**: Evaluates raw security inputs for threat presence and severity. Safe/clean files or low-level anomalies exit immediately on the fast path.
-  2. **Deep Forensic Analysis (mistral:7b)**: Critical threats, exfiltration vectors, or ransomware signals are escalated to the deep analyzer to generate full threat chain details and detailed mitigation plans.
-  *This conditional routing provides up to a 75% latency saving compared to running all inputs through the 7B parameter model.*
-- **Hindsight Memory**: Past threats and their resolutions are indexed inside ChromaDB. Subsequent alerts automatically query historical incidents to build context, optimize threat classification, and prevent security double-jeopardy or repetitive alerts.
-- **Fully Air-Gapped Capable**: All inference runs locally via Ollama — no external API calls, no token costs, works completely offline. Critical for incident response in isolated environments.
+- **CascadeFlow routing** — the two-tier cascade exists so that the 7B analyzer only runs on
+  inputs that warrant it. Clean files and low-severity anomalies exit after the 3.8B
+  classifier, which is several times faster.
+- **Hindsight memory** — resolved incidents are embedded and indexed, carrying their threat
+  type and severity. Later alerts query this history to build context and to detect composite
+  patterns that span sessions, which a single-shot classifier cannot see.
+- **Graceful degradation** — no single dependency being down takes the server with it. See
+  the table above for per-dependency behavior.
+
+---
+
+## Known limitations
+
+These are measured characteristics of the current build, not aspirations:
+
+- **Not air-gapped.** Inference is fully local, but `VOYAGE_API_KEY` is required and every
+  store and recall makes an outbound call to Voyage AI. The system cannot build or query
+  memory offline. Only the model inference is local.
+- **Voyage free-tier rate limits are a real bottleneck.** The free tier allows 3 requests per
+  minute. The embedder retries with exponential backoff (5s → 10s → 20s → 40s), but this
+  mitigates the limit rather than removing it: requests can still exhaust all retries and
+  fail with a 429. When backoff is hit, it adds up to ~75 s to a request, because the recall
+  embedding is on the critical path.
+- **Inference is slower than a GPU machine suggests.** Measured on CPU-only hardware: a cold
+  model load can exceed 30 s, and a warm `sentri-analyzer` call runs 13–46 s — not the 2–5 s
+  a small model might imply. `OLLAMA_KEEP_ALIVE` keeps models resident so only the first
+  request pays the load cost. End-to-end, an escalated request completes in roughly 17 s when
+  Voyage is not rate-limiting, and 60 s+ when it is.
+- **The reported latency saving is not meaningful yet.** The audit block computes its
+  "vs always-deep" figure against a hardcoded 2200 ms baseline (`ANALYZER_AVG_MS`) that does
+  not match observed analyzer latency, so it almost always reports zero saving. The
+  conditional routing does save real time; this particular metric does not measure it.
