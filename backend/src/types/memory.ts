@@ -28,6 +28,11 @@ export interface MemoryArtifact {
   /** ISO-8601 timestamp of artifact creation. */
   created_at: string;
   /**
+   * Classified severity label ("low" | "medium" | "high" | "critical" | "none").
+   * Extension field — carried into ChromaDB metadata and the recall embedding.
+   */
+  severity?: string;
+  /**
    * ChromaDB document ID for this artifact's embedding entry.
    * Extension field — not present in the Rust/TS Phase 1 schema.
    */

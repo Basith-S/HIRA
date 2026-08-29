@@ -209,13 +209,28 @@ router.post("/", async (req: Request, res: Response) => {
   // ── Step 3: Build internal InputTrigger from classification ───
   const severityNumeric = SEVERITY_NUMERIC[classification.severity] ?? 0.5;
   const internalTrigger: InputTrigger = {
-    trigger_type: classification.threatType ?? resolvedInputType,
+    // A non-threat has no threatType. Falling back to the submitted inputType
+    // filed every clean result as "unknown"; label it for what it is.
+    trigger_type:
+      classification.threatType ??
+      (classification.isThreat ? resolvedInputType : "clean"),
     source: resolvedSource ?? "unknown",
     severity: severityNumeric,
     summary:
       classification.reasoning.substring(0, 200) +
       (classification.threatType ? ` [${classification.threatType}]` : ""),
   };
+
+  // The Step 1 fallback recall scored against the *submitted* input type,
+  // because classification had not run yet — so a stored "brute_force" incident
+  // could never match a "log_lines" submission. Re-score now that the real
+  // threat type is known; merge dedupes by incident_id, keeping these.
+  if (phase5FallbackIncidents.length > 0) {
+    similarIncidents = mergeSimilarIncidents(
+      recallFromPhase5Fallback(internalTrigger),
+      similarIncidents
+    );
+  }
 
   // ── Step 4: Pattern matching (Hindsight behavioral override) ──
   const patternResult = matchPatterns(internalTrigger, similarIncidents);
@@ -229,7 +244,11 @@ router.post("/", async (req: Request, res: Response) => {
   if (isNovel && !budgetExceeded) {
     try {
       const novelResponse = await handleNovelAnomaly(rawInput, classification);
-      rememberInPhase5Fallback(internalTrigger.trigger_type, novelResponse.message);
+      rememberInPhase5Fallback(
+        internalTrigger.trigger_type,
+        novelResponse.message,
+        classification.severity
+      );
 
       res.json({
         inputId: rawInput.inputId,
@@ -286,8 +305,16 @@ router.post("/", async (req: Request, res: Response) => {
   }
 
   // ── Step 8: Persist to memory ─────────────────────────────────
-  await persistIncident(internalTrigger, classification, decision);
-  rememberInPhase5Fallback(internalTrigger.trigger_type, decision.recommendation);
+  // Best-effort, and deliberately not awaited: the Voyage embedder backs off
+  // exponentially (5s+10s+20s+40s) when rate-limited, which would otherwise be
+  // added straight onto user-visible latency for work the caller never reads.
+  // persistIncident swallows its own errors, so this cannot reject unhandled.
+  void persistIncident(internalTrigger, classification, decision);
+  rememberInPhase5Fallback(
+    internalTrigger.trigger_type,
+    decision.recommendation,
+    classification.severity
+  );
 
   // ── Step 9: Return response ───────────────────────────────────
   res.json({
@@ -432,6 +459,7 @@ async function persistIncident(
     incident_id: uuidv4(),
     trigger_type: trigger.trigger_type,
     vectors: [],
+    severity: classification.severity,
     mitigation_success: true,
     hindsight_note:
       `[${decision.mode}] ${classification.reasoning} ` +
@@ -483,7 +511,11 @@ function mergeSimilarIncidents(
     .slice(0, 5);
 }
 
-function rememberInPhase5Fallback(triggerType: string, recommendation: string): void {
+function rememberInPhase5Fallback(
+  triggerType: string,
+  recommendation: string,
+  severity: string
+): void {
   phase5FallbackIncidents.unshift({
     id: uuidv4(),
     distance: 0.25,
@@ -492,6 +524,7 @@ function rememberInPhase5Fallback(triggerType: string, recommendation: string): 
       trigger_type: triggerType,
       created_at: new Date().toISOString(),
       mitigation_success: "true",
+      severity,
       summary: recommendation.substring(0, 200),
     },
   });

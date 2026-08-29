@@ -16,7 +16,7 @@ dotenv.config({ path: path.resolve(__dirname, "../.env") });
 
 import express from "express";
 import cors from "cors";
-import { initVectorStore } from "./memory/vectorStore";
+import { checkChromaHealth, initVectorStore } from "./memory/vectorStore";
 import { TOKEN_BUDGET } from "./cascade/cascadeRouter";
 import { DEMO_SESSIONS } from "./demo/sessionScript";
 import { checkOllamaHealth } from "./ollama/ollamaClient";
@@ -33,16 +33,23 @@ app.use(express.json());
 
 // ── Health check ──────────────────────────────────────────────
 
-app.get("/health", async (_req, res) => {
-  const ollama = await checkOllamaHealth();
+// Both paths report the same thing — /health is the bare probe, /api/health is
+// what the frontend polls.
+async function buildHealthReport() {
+  const [ollama, chroma] = await Promise.all([
+    checkOllamaHealth(),
+    checkChromaHealth(),
+  ]);
+
   const hasClassifier = ollama.models.some((m) => m.includes("sentri-classifier"));
   const hasAnalyzer = ollama.models.some((m) => m.includes("sentri-analyzer"));
-  const isDegraded = !ollama.online || !hasClassifier || !hasAnalyzer;
+  const isDegraded = !ollama.online || !hasClassifier || !hasAnalyzer || !chroma.online;
 
-  res.json({
+  return {
     status: isDegraded ? "degraded" : "ok",
     services: {
-      chroma: "connected",
+      chroma: chroma.online ? "connected" : "disconnected",
+      chromaDocuments: chroma.documentCount,
       ollama: ollama.online ? "online" : "offline",
       models: {
         classifier: hasClassifier ? "ready" : "missing",
@@ -51,28 +58,15 @@ app.get("/health", async (_req, res) => {
     },
     phases: [1, 2, 3, 4, 5, 6, 7],
     version: "0.7.0",
-  });
+  };
+}
+
+app.get("/health", async (_req, res) => {
+  res.json(await buildHealthReport());
 });
 
 app.get("/api/health", async (_req, res) => {
-  const ollama = await checkOllamaHealth();
-  const hasClassifier = ollama.models.some((m) => m.includes("sentri-classifier"));
-  const hasAnalyzer = ollama.models.some((m) => m.includes("sentri-analyzer"));
-  const isDegraded = !ollama.online || !hasClassifier || !hasAnalyzer;
-
-  res.json({
-    status: isDegraded ? "degraded" : "ok",
-    services: {
-      chroma: "connected",
-      ollama: ollama.online ? "online" : "offline",
-      models: {
-        classifier: hasClassifier ? "ready" : "missing",
-        analyzer: hasAnalyzer ? "ready" : "missing",
-      },
-    },
-    phases: [1, 2, 3, 4, 5, 6, 7],
-    version: "0.7.0",
-  });
+  res.json(await buildHealthReport());
 });
 
 // ── CascadeFlow status ────────────────────────────────────────

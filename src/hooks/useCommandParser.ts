@@ -14,6 +14,27 @@ import { API_BASE_URL } from "../config";
 import { DEMO_SESSIONS } from "../constants/demoSessions";
 import type { SENTRIResponse, RecallResponse } from "../types/sentri";
 
+// ── Error formatting ──────────────────────────────────────────
+
+// A failed fetch surfaces as an opaque browser string ("NetworkError when
+// attempting to fetch resource" / "Failed to fetch") that says nothing about
+// the cause. In practice it always means the backend isn't reachable, so say
+// that instead — with the address that was tried.
+function describeFetchError(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const isNetworkFailure =
+    err instanceof TypeError ||
+    /networkerror|failed to fetch|load failed|fetch failed/i.test(message);
+
+  if (isNetworkFailure) {
+    return (
+      `cannot reach the SENTRI backend at ${API_BASE_URL} — ` +
+      `start it with \`npm run dev\` in the backend/ directory (${message})`
+    );
+  }
+  return message;
+}
+
 // ── Value coercion: string → boolean | number | string ───────
 
 function coerceValue(raw: string): string | number | boolean {
@@ -114,7 +135,7 @@ export async function parseAndExecuteCommand(
     } catch (err) {
       return {
         kind: "error",
-        message: `recall error: ${err instanceof Error ? err.message : String(err)}`,
+        message: `recall error: ${describeFetchError(err)}`,
       };
     }
   }
@@ -163,7 +184,7 @@ export async function parseAndExecuteCommand(
     } catch (err) {
       return {
         kind: "error",
-        message: `session error: ${err instanceof Error ? err.message : String(err)}`,
+        message: `session error: ${describeFetchError(err)}`,
       };
     }
   }
@@ -221,7 +242,7 @@ export async function parseAndExecuteCommand(
     } catch (err) {
       return {
         kind: "error",
-        message: `analyze error: ${err instanceof Error ? err.message : String(err)}`,
+        message: `analyze error: ${describeFetchError(err)}`,
       };
     }
   }
@@ -260,7 +281,7 @@ export async function parseAndExecuteCommand(
   } catch (err) {
     return {
       kind: "error",
-      message: `raw analyze error: ${err instanceof Error ? err.message : String(err)}`,
+      message: `raw analyze error: ${describeFetchError(err)}`,
     };
   }
 }

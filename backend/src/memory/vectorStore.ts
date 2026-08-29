@@ -15,6 +15,12 @@ const COLLECTION_NAME = "sentri_incidents";
 let client: ChromaClient | null = null;
 let collection: Collection | null = null;
 
+// Chroma may come up after the backend does (Docker started later). Retry the
+// connection lazily rather than staying dead until a server restart, but
+// throttle it so every request doesn't pay a connection timeout while it's down.
+const RECONNECT_INTERVAL_MS = 15_000;
+let lastConnectAttempt = 0;
+
 // ── Initialization ────────────────────────────────────────────
 
 /**
@@ -25,6 +31,7 @@ let collection: Collection | null = null;
  */
 export async function initVectorStore(): Promise<void> {
   const chromaUrl = process.env.CHROMA_URL ?? "http://localhost:8000";
+  lastConnectAttempt = Date.now();
 
   try {
     client = new ChromaClient({ path: chromaUrl });
@@ -50,19 +57,55 @@ export async function initVectorStore(): Promise<void> {
       err
     );
     // Do not throw — allow the server to start even if ChromaDB is down;
-    // individual operations will throw when collection is null.
+    // ensureCollection() will retry on later requests.
+    collection = null;
   }
 }
 
-// ── Guard helper ──────────────────────────────────────────────
+// ── Health ────────────────────────────────────────────────────
 
-function requireCollection(): Collection {
-  if (!collection) {
+/**
+ * Probe ChromaDB for real. Attempts a lazy reconnect if the collection is not
+ * currently held, so a Chroma instance started after the backend is picked up.
+ */
+export async function checkChromaHealth(): Promise<{
+  online: boolean;
+  documentCount: number | null;
+}> {
+  const col = await ensureCollection();
+  if (!col) return { online: false, documentCount: null };
+
+  try {
+    return { online: true, documentCount: await col.count() };
+  } catch {
+    // Connection died between the reconnect and the count.
+    collection = null;
+    return { online: false, documentCount: null };
+  }
+}
+
+// ── Guard helpers ─────────────────────────────────────────────
+
+/**
+ * Return the live collection, retrying the connection at most once per
+ * RECONNECT_INTERVAL_MS. Returns null when ChromaDB is still unreachable.
+ */
+async function ensureCollection(): Promise<Collection | null> {
+  if (collection) return collection;
+  if (Date.now() - lastConnectAttempt < RECONNECT_INTERVAL_MS) return null;
+
+  await initVectorStore();
+  return collection;
+}
+
+async function requireCollection(): Promise<Collection> {
+  const col = await ensureCollection();
+  if (!col) {
     throw new Error(
-      "[VectorStore] Collection not initialized. Did initVectorStore() run?"
+      "[VectorStore] ChromaDB unreachable. Start it with: docker-compose up -d"
     );
   }
-  return collection;
+  return col;
 }
 
 // ── Public API ────────────────────────────────────────────────
@@ -79,7 +122,7 @@ export async function upsertIncident(
   embedding: number[],
   metadata: Record<string, string>
 ): Promise<void> {
-  const col = requireCollection();
+  const col = await requireCollection();
 
   await col.upsert({
     ids: [id],
@@ -102,7 +145,7 @@ export async function querySimilar(
   embedding: number[],
   nResults: number = 3
 ): Promise<SimilarIncident[]> {
-  const col = requireCollection();
+  const col = await requireCollection();
 
   const count = await col.count();
   if (count === 0) {

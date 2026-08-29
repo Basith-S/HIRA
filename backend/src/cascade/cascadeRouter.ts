@@ -117,7 +117,9 @@ function buildCascadeAudit(
   analyzerLatencyMs: number,
   totalLatencyMs: number
 ): CascadeAuditBlock {
-  const contextLimit = escalated ? 16384 : 8192;
+  // Report against TOKEN_BUDGET — the limit this router actually enforces at
+  // intake. Printing the model context window here put a different denominator
+  // on the same numerator the UI shows next to it.
   const savingPct =
     !escalated && totalLatencyMs < ANALYZER_AVG_MS
       ? Math.round((1 - totalLatencyMs / ANALYZER_AVG_MS) * 100)
@@ -157,7 +159,7 @@ function buildCascadeAudit(
     `- Confidence:      ${Math.round(classification.confidence * 100)}%`,
     `- Severity:        ${classification.severity}`,
     `- Model Path:      ${modelPath}`,
-    `- Tokens Used:     ${tokenEstimate} / ${contextLimit}`,
+    `- Tokens Used:     ${tokenEstimate} / ${TOKEN_BUDGET}`,
     `- Inference Time:  ${latencyDetail}`,
     `- Decision:        ${decision}`,
     `- vs Always-Deep:  ${savingsStr}`,
@@ -168,7 +170,7 @@ function buildCascadeAudit(
       ? `${classification.severity} threat`
       : "no threat",
     modelPath,
-    tokensUsed: `${tokenEstimate} / ${contextLimit}`,
+    tokensUsed: `${tokenEstimate} / ${TOKEN_BUDGET}`,
     decisions,
     latencySavingPct: savingPct,
     formatted,

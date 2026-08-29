@@ -13,6 +13,15 @@ import { upsertIncident, querySimilar } from "./vectorStore";
 import { logIncident } from "./incidentLogger";
 import type { MemoryArtifact, InputTrigger, SimilarIncident } from "../types/memory";
 
+// Severity label → the 0–1 scale buildSummaryText embeds.
+const SEVERITY_NUMERIC: Record<string, number> = {
+  none: 0.1,
+  low: 0.25,
+  medium: 0.5,
+  high: 0.8,
+  critical: 0.97,
+};
+
 // ── Store ─────────────────────────────────────────────────────
 
 /**
@@ -26,11 +35,10 @@ import type { MemoryArtifact, InputTrigger, SimilarIncident } from "../types/mem
  */
 export async function storeIncident(artifact: MemoryArtifact): Promise<void> {
   // 1. Build summary text
+  const severityLabel = artifact.severity ?? "medium";
   const summaryText = buildSummaryText(
     artifact.trigger_type,
-    // severity is not stored on MemoryArtifact — derive from vectors if present,
-    // otherwise default to 0.5 as a neutral value
-    0.5,
+    SEVERITY_NUMERIC[severityLabel] ?? 0.5,
     artifact.hindsight_note || `Incident ${artifact.incident_id}`
   );
 
@@ -46,6 +54,7 @@ export async function storeIncident(artifact: MemoryArtifact): Promise<void> {
     trigger_type: artifact.trigger_type,
     created_at: artifact.created_at,
     mitigation_success: String(artifact.mitigation_success),
+    severity: severityLabel,
     summary: summaryText,
     embedding_id: embeddingId,
   };

@@ -26,14 +26,15 @@ export function useConnectionStatus(): ConnectionStatus {
 
       const data = (await res.json()) as {
         status: string;
-        memory?: string;
+        services?: { chroma?: string };
       };
 
-      const api: ConnectionState = data.status === "ok" ? "connected" : "disconnected";
+      // A 200 means the API is up. "degraded" describes its dependencies
+      // (Ollama/Chroma), not reachability, so it must not mark the API down.
       const chroma: ConnectionState =
-        data.memory === "chroma_connected" ? "connected" : "disconnected";
+        data.services?.chroma === "connected" ? "connected" : "disconnected";
 
-      setStatus({ api, chroma });
+      setStatus({ api: "connected", chroma });
     } catch {
       setStatus({ chroma: "disconnected", api: "disconnected" });
     }

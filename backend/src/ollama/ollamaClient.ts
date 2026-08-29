@@ -5,14 +5,20 @@
 // Exposes runClassifier(), runAnalyzer(), checkOllamaHealth().
 //
 // Error types:
-//   OllamaTimeoutError     — 30s timeout exceeded
+//   OllamaTimeoutError     — request exceeded OLLAMA_TIMEOUT_MS (default 120s)
 //   OllamaUnavailableError — Ollama not running / connection refused
 // ─────────────────────────────────────────────────────────────
 
 const OLLAMA_BASE = process.env["OLLAMA_URL"] ?? "http://localhost:11434";
 const CLASSIFIER_MODEL = "sentri-classifier";
 const ANALYZER_MODEL = "sentri-analyzer";
-const TIMEOUT_MS = 30_000;
+// Cold model loads (phi3:mini / mistral:7b being paged into memory on the
+// first request) routinely take longer than a warm inference, so this budget
+// has to cover load time, not just generation. Override with OLLAMA_TIMEOUT_MS.
+const TIMEOUT_MS = parseInt(process.env["OLLAMA_TIMEOUT_MS"] ?? "120000", 10);
+
+// Keep a model resident between requests so only the first call pays the load cost.
+const KEEP_ALIVE = process.env["OLLAMA_KEEP_ALIVE"] ?? "30m";
 
 // ── Typed errors ──────────────────────────────────────────────
 
@@ -36,6 +42,7 @@ type OllamaRequest = {
   model: string;
   prompt: string;
   stream: false;
+  keep_alive?: string;
   options?: {
     temperature?: number;
     num_predict?: number;
@@ -72,6 +79,7 @@ async function callOllama(model: string, prompt: string): Promise<OllamaResult> 
     model,
     prompt,
     stream: false,
+    keep_alive: KEEP_ALIVE,
   };
 
   try {

@@ -7,7 +7,8 @@ export type AgentDecisionMode =
   | "BASELINE"
   | "COMPOSITE_OVERRIDE"
   | "BUDGET_FALLBACK"
-  | "NOVEL_ANOMALY";
+  | "NOVEL_ANOMALY"
+  | "DEEP_ANALYSIS";
 
 export interface AgentDecision {
   mode: AgentDecisionMode;
@@ -17,6 +18,17 @@ export interface AgentDecision {
   patternId: string | null;
   patternLabel: string | null;
   confidence: number | null;
+}
+
+/** Intake classifier output. Mirrors backend `GeminiClassification`. */
+export interface ThreatClassification {
+  isThreat: boolean;
+  confidence: number;
+  threatType: string | null;
+  severity: "low" | "medium" | "high" | "critical" | "none";
+  indicators: Record<string, string | number | boolean>;
+  reasoning: string;
+  recommendedPath: "fast" | "escalate";
 }
 
 export interface SimilarIncident {
@@ -47,6 +59,9 @@ export interface InputTrigger {
  */
 export interface SENTRIResponse {
   session_id: string;
+  /** Present on the Phase 7 pipeline response; absent on legacy replies. */
+  inputId?: string;
+  classification?: ThreatClassification | null;
   trigger_type: string;
   recommendation: string;
   used_memory: boolean;
@@ -69,7 +84,8 @@ export interface SENTRIResponse {
     overridden: boolean;
     confidence: number;
     cascadeAudit?: CascadeAuditBlock | null;
-    modelPath?: "fast_path" | "escalation_path" | "degraded_fallback" | null;
+    /** Free-form model path label, e.g. "sentri-classifier (phi3:mini)". */
+    modelPath?: string | null;
     tokenBudget?: number;
     tokensUsed?: number;
   };
