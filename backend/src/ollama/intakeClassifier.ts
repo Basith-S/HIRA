@@ -13,7 +13,12 @@
 // ─────────────────────────────────────────────────────────────
 
 import { runClassifier, OllamaTimeoutError, OllamaUnavailableError } from "./ollamaClient";
-import { buildClassifierPrompt } from "./promptBuilder";
+import { buildTelemetryPrompt } from "./promptBuilder";
+import {
+  CONFIDENCE_FROM_SEVERITY,
+  VALID_SEVERITIES,
+  shouldEscalate,
+} from "./contract";
 import type { RawInput, GeminiClassification } from "../types/memory";
 
 // ── Safe fallback ─────────────────────────────────────────────
@@ -33,10 +38,6 @@ const SAFE_FALLBACK: GeminiClassification = {
   reasoning: "Classifier returned no usable response — escalated for analysis rather than dismissed.",
   recommendedPath: "escalate",
 };
-
-// ── Valid severity values ─────────────────────────────────────
-
-const VALID_SEVERITIES = new Set(["none", "low", "medium", "high", "critical"]);
 
 // ── JSON extraction helper ────────────────────────────────────
 // Handles cases where the SLM wraps response in markdown fences.
@@ -63,18 +64,6 @@ function extractJson(raw: string): string {
 // What is returned below is therefore DERIVED FROM SEVERITY, not reported by the
 // model. It exists so downstream display and notification code keeps working.
 // Do not treat it as a measured probability.
-const CONFIDENCE_FROM_SEVERITY: Record<string, number> = {
-  none: 0.05, low: 0.2, medium: 0.5, high: 0.85, critical: 0.95,
-};
-
-// Routing is the host's decision now, not the model's -- `recommendedPath` was
-// removed from the schema for the same reason as `confidence`. This restores
-// the rule the old Modelfile stated, evaluated here.
-const ESCALATE_TYPES = new Set([
-  "lateral_movement", "data_exfiltration", "ransomware",
-  "privilege_escalation", "supply_chain", "rce", "zero_day",
-]);
-
 function parseClassification(raw: string): GeminiClassification {
   const parsed = JSON.parse(extractJson(raw));
 
@@ -95,9 +84,7 @@ function parseClassification(raw: string): GeminiClassification {
       ? parsed["confidence"]
       : (CONFIDENCE_FROM_SEVERITY[severity] ?? 0.5);
 
-  const escalate =
-    severity === "high" || severity === "critical" ||
-    (threatType !== null && ESCALATE_TYPES.has(threatType));
+  const escalate = shouldEscalate(severity, threatType);
 
   return {
     isThreat: parsed["isThreat"],
@@ -116,7 +103,24 @@ function parseClassification(raw: string): GeminiClassification {
 export async function classifyRawInput(
   input: RawInput
 ): Promise<GeminiClassification> {
-  const prompt = buildClassifierPrompt(input);
+  // osava-smollm only understands Windows telemetry in the R1 contract. On
+  // anything else it returns severity "none" -- it answers "clean" rather than
+  // declining -- so an unsupported input must never reach it. Escalating is
+  // the safe direction; the deep-analysis tier is a generalist.
+  const prompt = buildTelemetryPrompt(input);
+  if (prompt === null) {
+    console.warn(
+      `[IntakeClassifier] ${input.inputId} (${input.inputType}) is outside the ` +
+        `classifier's trained contract — escalating instead of classifying.`
+    );
+    return {
+      ...SAFE_FALLBACK,
+      indicators: { unsupported_input_type: input.inputType },
+      reasoning:
+        `Input type "${input.inputType}" is outside the intake classifier's ` +
+        `trained domain (Windows Sysmon telemetry). Escalated for deep analysis.`,
+    };
+  }
 
   // First attempt
   let rawResponse: string;

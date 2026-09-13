@@ -10,16 +10,42 @@
 // ─────────────────────────────────────────────────────────────
 
 import type { RawInput, GeminiClassification, SimilarIncident } from "../types/memory";
+import { buildContractPrompt, isSupportedInput, renderContract } from "./contract";
 
 // ── Classifier Prompt ─────────────────────────────────────────
 
 const CLASSIFIER_CONTENT_CAP = 6000;
 
 /**
- * Build a few-shot classifier prompt for osava-smollm (SmolLM3-3B).
- * Includes 2 examples (one threat, one clean) before the real input.
+ * Build the prompt for the FINE-TUNED classifier (osava-smollm).
+ *
+ * Returns null when this input cannot be expressed in the trained contract —
+ * either the wrong input type, or text that carries no EventID. The caller
+ * must route those elsewhere; it must never fall through to the few-shot
+ * builder below, because the fine-tune answers "none" on anything it was not
+ * trained on rather than declining.
+ *
+ * No few-shot examples, deliberately. The model was fine-tuned zero-shot
+ * against the system prompt in its Modelfile, and the examples in
+ * buildFewShotClassifierPrompt() demonstrate the pre-R4 seven-field schema
+ * (confidence, recommendedPath, severity fourth) that R4/R7 replaced. Showing
+ * the fine-tune a contradictory schema teaches it to emit one.
  */
-export function buildClassifierPrompt(input: RawInput): string {
+export function buildTelemetryPrompt(input: RawInput): string | null {
+  if (!isSupportedInput(input.inputType)) return null;
+  const body = renderContract(input.content);
+  return body === null ? null : buildContractPrompt(body);
+}
+
+/**
+ * Few-shot prompt for a GENERALIST classifier (phi3:mini and similar).
+ *
+ * Retained for input types osava-smollm cannot handle — code_snippet,
+ * file_entry, network_capture, email_content, hash_list, unknown. Its
+ * examples still describe the seven-field schema, which is correct for the
+ * generalist and wrong for the fine-tune; keep the two paths apart.
+ */
+export function buildFewShotClassifierPrompt(input: RawInput): string {
   const contentSlice = input.content.slice(0, CLASSIFIER_CONTENT_CAP);
   const truncationNote =
     input.content.length > CLASSIFIER_CONTENT_CAP ? "\n... [truncated]" : "";
