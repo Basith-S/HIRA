@@ -19,7 +19,7 @@ import cors from "cors";
 import { checkChromaHealth, initVectorStore } from "./memory/vectorStore";
 import { TOKEN_BUDGET } from "./cascade/cascadeRouter";
 import { DEMO_SESSIONS } from "./demo/sessionScript";
-import { checkOllamaHealth } from "./ollama/ollamaClient";
+import { checkOllamaHealth, EMBEDDING_MODEL_NAME } from "./ollama/ollamaClient";
 import analyzeRouter from "./routes/analyze";
 import memoryRouter from "./routes/memory";
 
@@ -41,9 +41,11 @@ async function buildHealthReport() {
     checkChromaHealth(),
   ]);
 
-  const hasClassifier = ollama.models.some((m) => m.includes("sentri-classifier"));
+  const hasClassifier = ollama.models.some((m) => m.includes("osava-smollm"));
   const hasAnalyzer = ollama.models.some((m) => m.includes("sentri-analyzer"));
-  const isDegraded = !ollama.online || !hasClassifier || !hasAnalyzer || !chroma.online;
+  const hasEmbedder = ollama.models.some((m) => m.includes(EMBEDDING_MODEL_NAME));
+  const isDegraded =
+    !ollama.online || !hasClassifier || !hasAnalyzer || !hasEmbedder || !chroma.online;
 
   return {
     status: isDegraded ? "degraded" : "ok",
@@ -54,6 +56,7 @@ async function buildHealthReport() {
       models: {
         classifier: hasClassifier ? "ready" : "missing",
         analyzer: hasAnalyzer ? "ready" : "missing",
+        embedder: hasEmbedder ? "ready" : "missing",
       },
     },
     phases: [1, 2, 3, 4, 5, 6, 7],
@@ -78,9 +81,9 @@ app.get("/api/cascade/status", (_req, res) => {
     status: "active",
     tokenBudget: TOKEN_BUDGET,
     description:
-      "CascadeFlow Routing Engine — Intake classifier (sentri-classifier / phi3:mini) → conditional Deep Analysis (sentri-analyzer / mistral:7b), appending structured audit trail.",
+      "CascadeFlow Routing Engine — Intake classifier (osava-smollm / SmolLM3-3B) → conditional Deep Analysis (sentri-analyzer / mistral:7b), appending structured audit trail.",
     paths: {
-      fast_path: "sentri-classifier (phi3:mini) — classification & baseline mitigation",
+      fast_path: "osava-smollm (SmolLM3-3B) — classification & baseline mitigation",
       escalation_path: "sentri-analyzer (mistral:7b) — deep forensic analysis",
       degraded_fallback: "rule-based memory lookup — token budget exceeded",
     },
@@ -109,16 +112,22 @@ async function checkDependencies(): Promise<void> {
     return;
   }
 
-  const hasClassifier = ollama.models.some((m) => m.includes("sentri-classifier"));
+  const hasClassifier = ollama.models.some((m) => m.includes("osava-smollm"));
   const hasAnalyzer = ollama.models.some((m) => m.includes("sentri-analyzer"));
 
-  if (!hasClassifier || !hasAnalyzer) {
+  const hasEmbedder = ollama.models.some((m) => m.includes(EMBEDDING_MODEL_NAME));
+
+  if (!hasClassifier || !hasAnalyzer || !hasEmbedder) {
     console.warn("[SENTRI] ⚠ SENTRI models not built. Run: npm run setup:models");
-    if (!hasClassifier) console.warn("[SENTRI]   Missing: sentri-classifier");
+    if (!hasClassifier) console.warn("[SENTRI]   Missing: osava-smollm");
     if (!hasAnalyzer) console.warn("[SENTRI]   Missing: sentri-analyzer");
+    if (!hasEmbedder) console.warn(`[SENTRI]   Missing: ${EMBEDDING_MODEL_NAME} (memory disabled)`);
   } else {
-    console.log("[SENTRI] ✓ sentri-classifier ready (phi3:mini)");
-    console.log("[SENTRI] ✓ sentri-analyzer ready (mistral:7b)");
+    // Don't name a base model here — it reports what the Modelfile *asks* for,
+    // not what the installed model was actually built from.
+    console.log("[SENTRI] ✓ osava-smollm ready");
+    console.log("[SENTRI] ✓ sentri-analyzer ready");
+    console.log(`[SENTRI] ✓ ${EMBEDDING_MODEL_NAME} ready (local embeddings)`);
   }
 }
 

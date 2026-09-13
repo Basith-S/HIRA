@@ -2,7 +2,7 @@
 // Few-Shot Prompt Builder — Ollama SLM
 //
 // Constructs prompts with hardcoded few-shot examples to anchor
-// phi3:mini (classifier) and mistral:7b (analyzer) to SENTRI's
+// SmolLM3-3B (classifier) and mistral:7b (analyzer) to SENTRI's
 // expected JSON output schemas.
 //
 // All examples are inline string literals — zero I/O, always
@@ -16,7 +16,7 @@ import type { RawInput, GeminiClassification, SimilarIncident } from "../types/m
 const CLASSIFIER_CONTENT_CAP = 6000;
 
 /**
- * Build a few-shot classifier prompt for sentri-classifier (phi3:mini).
+ * Build a few-shot classifier prompt for osava-smollm (SmolLM3-3B).
  * Includes 2 examples (one threat, one clean) before the real input.
  */
 export function buildClassifierPrompt(input: RawInput): string {

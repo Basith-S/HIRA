@@ -7,7 +7,7 @@
 // Pipeline:
 //   1. Build RawInput
 //   2. Token estimate — if >= 8000: budget fallback
-//   3. runCascade (sentri-classifier → optional sentri-analyzer)
+//   3. runCascade (osava-smollm → optional sentri-analyzer)
 //   4. Build internal InputTrigger for Hindsight
 //   5. recallSimilar (ChromaDB)
 //   6. matchPatterns
@@ -272,8 +272,8 @@ router.post("/", async (req: Request, res: Response) => {
           confidence: classification.confidence,
           cascadeAudit,
           modelPath: cascadeResult.escalated
-            ? "sentri-classifier → sentri-analyzer (phi3:mini → mistral:7b)"
-            : "sentri-classifier (phi3:mini)",
+            ? "osava-smollm → sentri-analyzer (SmolLM3-3B → mistral:7b)"
+            : "osava-smollm (SmolLM3-3B)",
           tokenBudget: TOKEN_BUDGET,
           tokensUsed: cascadeResult.tokensUsed,
         },
@@ -305,9 +305,8 @@ router.post("/", async (req: Request, res: Response) => {
   }
 
   // ── Step 8: Persist to memory ─────────────────────────────────
-  // Best-effort, and deliberately not awaited: the Voyage embedder backs off
-  // exponentially (5s+10s+20s+40s) when rate-limited, which would otherwise be
-  // added straight onto user-visible latency for work the caller never reads.
+  // Best-effort, and deliberately not awaited: embedding + vector upsert is
+  // work the caller never reads, so it should not sit on the response path.
   // persistIncident swallows its own errors, so this cannot reject unhandled.
   void persistIncident(internalTrigger, classification, decision);
   rememberInPhase5Fallback(
@@ -339,8 +338,8 @@ router.post("/", async (req: Request, res: Response) => {
       confidence: matchConfidence,
       cascadeAudit,
       modelPath: cascadeResult.escalated
-        ? "sentri-classifier → sentri-analyzer (phi3:mini → mistral:7b)"
-        : "sentri-classifier (phi3:mini)",
+        ? "osava-smollm → sentri-analyzer (SmolLM3-3B → mistral:7b)"
+        : "osava-smollm (SmolLM3-3B)",
       tokenBudget: TOKEN_BUDGET,
       tokensUsed: cascadeResult.tokensUsed,
     },

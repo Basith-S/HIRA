@@ -2,7 +2,7 @@
 // Ollama Client — Local SLM via Ollama REST API
 //
 // ONLY file that calls http://localhost:11434 (or OLLAMA_URL).
-// Exposes runClassifier(), runAnalyzer(), checkOllamaHealth().
+// Exposes runClassifier(), runAnalyzer(), runEmbedding(), checkOllamaHealth().
 //
 // Error types:
 //   OllamaTimeoutError     — request exceeded OLLAMA_TIMEOUT_MS (default 120s)
@@ -10,9 +10,12 @@
 // ─────────────────────────────────────────────────────────────
 
 const OLLAMA_BASE = process.env["OLLAMA_URL"] ?? "http://localhost:11434";
-const CLASSIFIER_MODEL = "sentri-classifier";
+const CLASSIFIER_MODEL = "osava-smollm";
 const ANALYZER_MODEL = "sentri-analyzer";
-// Cold model loads (phi3:mini / mistral:7b being paged into memory on the
+// 1024-dimensional, matching the vector width the ChromaDB collection was
+// created with — swapping to a different width requires rebuilding it.
+const EMBED_MODEL = process.env["OLLAMA_EMBED_MODEL"] ?? "mxbai-embed-large";
+// Cold model loads (SmolLM3-3B / mistral:7b being paged into memory on the
 // first request) routinely take longer than a warm inference, so this budget
 // has to cover load time, not just generation. Override with OLLAMA_TIMEOUT_MS.
 const TIMEOUT_MS = parseInt(process.env["OLLAMA_TIMEOUT_MS"] ?? "120000", 10);
@@ -130,7 +133,7 @@ async function callOllama(model: string, prompt: string): Promise<OllamaResult> 
 // ── Public API ────────────────────────────────────────────────
 
 /**
- * Run the sentri-classifier model (phi3:mini) for intake classification.
+ * Run the osava-smollm model (SmolLM3-3B) for intake classification.
  */
 export async function runClassifier(prompt: string): Promise<OllamaResult> {
   return callOllama(CLASSIFIER_MODEL, prompt);
@@ -142,6 +145,57 @@ export async function runClassifier(prompt: string): Promise<OllamaResult> {
 export async function runAnalyzer(prompt: string): Promise<OllamaResult> {
   return callOllama(ANALYZER_MODEL, prompt);
 }
+
+/**
+ * Generate an embedding vector for `text` via the local embedding model.
+ * Returns a 1024-dimensional vector for the default mxbai-embed-large.
+ */
+export async function runEmbedding(text: string): Promise<number[]> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  try {
+    const response = await fetch(`${OLLAMA_BASE}/api/embeddings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: EMBED_MODEL,
+        prompt: text,
+        keep_alive: KEEP_ALIVE,
+      }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        `Ollama embeddings returned HTTP ${response.status}: ${response.statusText}`
+      );
+    }
+
+    const data = (await response.json()) as { embedding?: number[] };
+    if (!data.embedding || data.embedding.length === 0) {
+      throw new Error(`Ollama model '${EMBED_MODEL}' returned an empty embedding.`);
+    }
+
+    return data.embedding;
+  } catch (err: unknown) {
+    if (err instanceof Error) {
+      if (err.name === "AbortError") throw new OllamaTimeoutError(EMBED_MODEL);
+      if (
+        err.message.includes("ECONNREFUSED") ||
+        err.message.includes("fetch failed") ||
+        err.message.includes("network")
+      ) {
+        throw new OllamaUnavailableError();
+      }
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+export const EMBEDDING_MODEL_NAME = EMBED_MODEL;
 
 /**
  * Check if Ollama is reachable and which models are available.
