@@ -2,14 +2,14 @@
 // CascadeRouter — Ollama Local SLM Routing Orchestrator
 //
 // Replaces CascadeFlow/Gemini with local Ollama models:
-//   sentri-classifier (phi3:mini) — fast intake classification
+//   osava-smollm (SmolLM3-3B) — fast intake classification
 //   sentri-analyzer   (mistral:7b) — deep forensic analysis
 //
 // Pipeline:
 //   RawInput
 //     → token estimate (ceil(content.length/4) + 180)
-//     → if >= 8000: budget fallback immediately
-//     → intakeClassifier (Ollama sentri-classifier)
+//     → if >= TOKEN_BUDGET: budget fallback immediately
+//     → intakeClassifier (Ollama osava-smollm)
 //     → if escalate: deepAnalyzer (Ollama sentri-analyzer)
 //     → buildCascadeAudit
 // ─────────────────────────────────────────────────────────────
@@ -24,7 +24,18 @@ import type {
   CascadeAuditBlock,
 } from "../types/memory";
 
-export const TOKEN_BUDGET = 8000;
+// Bounded by the *classifier's* context window, since every input passes
+// through it. SmolLM3-3B has max_position_embeddings 65536, so this is a real
+// limit rather than a nominal one. Keep it below the Modelfile's num_ctx,
+// which is 32768.
+//
+// Note this is also bounded by VRAM, not just by the model. SmolLM3 has GQA
+// (4 KV heads of 16 across 36 layers, head_dim 128), so its KV cache costs
+// ~0.07 MB per token — about 2.25 GB at 32k, against phi3-mini's 12 GB for
+// the same window. That is what makes a 32k budget affordable here at all.
+// On a smaller card, lower this and num_ctx together, or set
+// OLLAMA_KV_CACHE_TYPE=q8_0 to halve the cache.
+export const TOKEN_BUDGET = parseInt(process.env["TOKEN_BUDGET"] ?? "32000", 10);
 const SYSTEM_PROMPT_OVERHEAD = 180;
 
 /** Average mistral:7b inference time on mid-range hardware (ms). */
@@ -58,9 +69,9 @@ export async function runCascade(
     return getBudgetFallback(input.inputType);
   }
 
-  // ── Step 1: Classify via sentri-classifier (phi3:mini) ────
+  // ── Step 1: Classify via osava-smollm (SmolLM3-3B) ────
   console.log(
-    `[CascadeRouter] Classifying ${input.inputId} via sentri-classifier...`
+    `[CascadeRouter] Classifying ${input.inputId} via osava-smollm...`
   );
   const classifierStartMs = Date.now();
   const classification = await classifyRawInput(input);
@@ -131,16 +142,16 @@ function buildCascadeAudit(
 
   if (!classification.isThreat) {
     decision = "No threat indicators found";
-    modelPath = "sentri-classifier (phi3:mini)";
+    modelPath = "osava-smollm (SmolLM3-3B)";
     latencyDetail = `${classifierLatencyMs}ms`;
   } else if (escalated) {
     decision = `Escalated — ${classification.severity} + ${classification.threatType}`;
     modelPath =
-      "sentri-classifier → sentri-analyzer (phi3:mini → mistral:7b)";
+      "osava-smollm → sentri-analyzer (SmolLM3-3B → mistral:7b)";
     latencyDetail = `${classifierLatencyMs}ms classifier + ${analyzerLatencyMs}ms analyzer`;
   } else {
     decision = "Threat confirmed — fast path sufficient";
-    modelPath = "sentri-classifier (phi3:mini)";
+    modelPath = "osava-smollm (SmolLM3-3B)";
     latencyDetail = `${classifierLatencyMs}ms`;
   }
 
