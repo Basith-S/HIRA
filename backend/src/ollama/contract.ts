@@ -42,6 +42,8 @@ export interface ClassifierContract {
     confidence_from_severity: Record<string, number>;
   };
   indicators: string[];
+  exculpatory_indicators: string[];
+  threat_types: string[];
   output_fields: string[];
   prompt_sha256: string;
   prompt_variant: string;
@@ -53,6 +55,9 @@ export const VALID_SEVERITIES = new Set(CONTRACT.severity.accepted_on_input);
 export const ESCALATE_SEVERITIES = new Set(CONTRACT.routing.escalate_severities);
 export const ESCALATE_THREAT_TYPES = new Set(CONTRACT.routing.escalate_threat_types);
 export const CONFIDENCE_FROM_SEVERITY = CONTRACT.routing.confidence_from_severity;
+export const INDICATOR_VOCAB = new Set(CONTRACT.indicators);
+export const EXCULPATORY = new Set(CONTRACT.exculpatory_indicators);
+export const THREAT_TYPES = new Set(CONTRACT.threat_types);
 
 /**
  * Can the specialist classify this input at all?

@@ -14,6 +14,7 @@
 
 import { runClassifier, OllamaTimeoutError, OllamaUnavailableError } from "./ollamaClient";
 import { buildTelemetryPrompt } from "./promptBuilder";
+import { guardClassification } from "./outputGuard";
 import {
   CONFIDENCE_FROM_SEVERITY,
   VALID_SEVERITIES,
@@ -107,8 +108,8 @@ export async function classifyRawInput(
   // anything else it returns severity "none" -- it answers "clean" rather than
   // declining -- so an unsupported input must never reach it. Escalating is
   // the safe direction; the deep-analysis tier is a generalist.
-  const prompt = buildTelemetryPrompt(input);
-  if (prompt === null) {
+  const built = buildTelemetryPrompt(input);
+  if (built === null) {
     console.warn(
       `[IntakeClassifier] ${input.inputId} (${input.inputType}) is outside the ` +
         `classifier's trained contract — escalating instead of classifying.`
@@ -121,6 +122,8 @@ export async function classifyRawInput(
         `trained domain (Windows Sysmon telemetry). Escalated for deep analysis.`,
     };
   }
+
+  const { prompt, body } = built;
 
   // First attempt
   let rawResponse: string;
@@ -140,16 +143,19 @@ export async function classifyRawInput(
 
   // First parse attempt
   try {
-    return parseClassification(rawResponse);
+    return guardClassification(parseClassification(rawResponse), body);
   } catch (parseErr) {
     console.warn("[IntakeClassifier] JSON parse failed on first attempt, retrying...");
   }
 
-  // Retry: re-call with explicit JSON instruction
+  // Retry with the SAME prompt. This used to append "You must respond with
+  // ONLY a JSON object", which put text after `Classify.` that the fine-tune
+  // never saw in training -- a format drift on exactly the inputs that are
+  // already going wrong. The retry now only covers transient failures; a
+  // structurally bad output fails open below.
   try {
-    const retryPrompt = prompt + "\nYou must respond with ONLY a JSON object. No other text.";
-    const retryResult = await runClassifier(retryPrompt);
-    return parseClassification(retryResult.text);
+    const retryResult = await runClassifier(prompt);
+    return guardClassification(parseClassification(retryResult.text), body);
   } catch (retryErr) {
     console.warn("[IntakeClassifier] Retry failed, returning safe fallback.");
     return SAFE_FALLBACK;

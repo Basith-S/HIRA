@@ -31,10 +31,14 @@ const CLASSIFIER_CONTENT_CAP = 6000;
  * (confidence, recommendedPath, severity fourth) that R4/R7 replaced. Showing
  * the fine-tune a contradictory schema teaches it to emit one.
  */
-export function buildTelemetryPrompt(input: RawInput): string | null {
+export function buildTelemetryPrompt(
+  input: RawInput
+): { prompt: string; body: string } | null {
   if (!isSupportedInput(input.inputType)) return null;
   const body = renderContract(input.content);
-  return body === null ? null : buildContractPrompt(body);
+  // `body` is returned alongside the prompt because the output guard checks
+  // every indicator value against exactly the event the model was shown.
+  return body === null ? null : { prompt: buildContractPrompt(body), body };
 }
 
 /**
